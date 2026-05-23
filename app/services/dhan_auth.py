@@ -80,7 +80,7 @@ class DhanAuthService:
         if not consent_id:
             raise ExternalServiceError("Dhan", f"generate consent returned no consent id: {data}")
         login_url = (
-            f"{self.settings.dhan_auth_base_url.rstrip('/')}/login/consentApp-login"
+            f"{self.settings.dhan_auth_base_url.rstrip('/')}/app/login"
             f"?consentAppId={quote(str(consent_id))}"
         )
         return {"consent_id": str(consent_id), "login_url": login_url, "raw": data}
@@ -150,4 +150,3 @@ class DhanAuthService:
         if not isinstance(data, dict):
             raise ExternalServiceError("Dhan", f"{action} returned unexpected payload: {data}")
         return data
-
