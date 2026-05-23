@@ -11,3 +11,4 @@ yfinance==0.2.51
 google-genai==1.0.0
 python-dotenv==1.0.1
 structlog==24.4.0
+cryptography==48.0.0

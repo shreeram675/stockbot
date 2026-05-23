@@ -3,13 +3,15 @@ from app.repositories.portfolio import PortfolioRepository
 from app.schemas.portfolio import HoldingView, PortfolioView, ProviderStatus
 from app.services.analytics import PortfolioAnalytics
 from app.services.dhan import DhanService
+from app.services.dhan_auth import DhanAuthService
 from app.services.market import MarketDataService
 
 
 class PortfolioService:
     def __init__(self, repository: PortfolioRepository):
         self.repository = repository
-        self.dhan = DhanService()
+        token = DhanAuthService(repository.db).latest_access_token()
+        self.dhan = DhanService(access_token=token)
         self.market = MarketDataService()
         self.analytics = PortfolioAnalytics()
 
@@ -95,4 +97,3 @@ class PortfolioService:
             for h in view.holdings
         ]
         return self.repository.save_snapshot(snapshot, holdings)
-

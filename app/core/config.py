@@ -24,7 +24,12 @@ class Settings(BaseSettings):
 
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
+    dhan_api_key: str | None = None
+    dhan_api_secret: str | None = None
     dhan_api_base_url: str = "https://api.dhan.co"
+    dhan_auth_base_url: str = "https://auth.dhan.co"
+    dhan_redirect_url: str = "https://stockbot-rho.vercel.app/api/dhan/callback"
+    dhan_postback_url: str = "https://stockbot-rho.vercel.app/api/dhan/postback"
 
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
@@ -62,6 +67,10 @@ class Settings(BaseSettings):
             "supabase_service_role_key",
             "dhan_client_id",
             "dhan_access_token",
+            "dhan_api_key",
+            "dhan_api_secret",
+            "dhan_redirect_url",
+            "dhan_postback_url",
             "gemini_api_key",
             "finnhub_api_key",
             "cron_secret",

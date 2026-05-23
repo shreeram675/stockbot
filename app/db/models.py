@@ -86,6 +86,21 @@ class Recommendation(Base):
     context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class DhanAuthToken(Base):
+    __tablename__ = "dhan_auth_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    client_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    encrypted_access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_source: Mapped[str] = mapped_column(String(64), nullable=False, default="api_key_consent")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 class SystemLog(Base):
     __tablename__ = "system_logs"
 
@@ -106,4 +121,3 @@ class AlertLog(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     delivery_status: Mapped[str] = mapped_column(String(64), nullable=False)
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-

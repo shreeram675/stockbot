@@ -12,12 +12,25 @@ Check `TELEGRAM_WEBHOOK_SECRET` and the `secret_token` used when registering the
 
 Check:
 
-- `DHAN_ACCESS_TOKEN`
+- `DHAN_API_KEY`
+- `DHAN_API_SECRET`
+- Dhan consent flow completed at `/api/dhan/auth/start`
+- fallback `DHAN_ACCESS_TOKEN`, if using manual token mode
 - Dhan API access is enabled.
 - Dhan token has not expired.
 - Dhan holdings/positions endpoints are reachable.
 
 The app does not create fake portfolio data when Dhan fails.
+
+## Dhan DH-906 Invalid Token
+
+The supplied Dhan token is not accepted by Dhan. If using API-key mode, restart the consent flow:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/auth/start
+```
+
+If using manual fallback mode, generate a fresh token in Dhan Web and update `DHAN_ACCESS_TOKEN`.
 
 ## AI Model Unavailable
 
@@ -55,4 +68,3 @@ Check:
 ## Alembic Cannot Connect
 
 Check `DATABASE_URL`. Supabase passwords with special characters may need URL encoding.
-

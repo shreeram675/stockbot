@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from telegram import Bot, Update
 
 from app.core.config import get_settings
@@ -6,6 +7,7 @@ from app.core.errors import ExternalServiceError, MissingConfigurationError
 from app.db.session import get_session
 from app.repositories.portfolio import PortfolioRepository
 from app.repositories.users import UserRepository
+from app.services.dhan_auth import DhanAuthService
 from app.services.reports import ReportService
 from app.telegram.bot import build_application, monthly_risk_keyboard
 
@@ -33,6 +35,48 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
         await app.process_update(update)
     finally:
         await app.shutdown()
+    return {"ok": True}
+
+
+@router.get("/api/dhan/auth/start")
+async def dhan_auth_start():
+    db = next(get_session())
+    try:
+        consent = await DhanAuthService(db).generate_consent()
+    except (MissingConfigurationError, ExternalServiceError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(consent["login_url"], status_code=302)
+
+
+@router.get("/api/dhan/callback")
+async def dhan_callback(request: Request):
+    token_id = request.query_params.get("tokenId") or request.query_params.get("token_id")
+    if not token_id:
+        return HTMLResponse(
+            "Dhan callback received, but tokenId was missing. Authentication was not completed.",
+            status_code=400,
+        )
+    db = next(get_session())
+    try:
+        result = await DhanAuthService(db).consume_consent(token_id)
+    except (MissingConfigurationError, ExternalServiceError) as exc:
+        return HTMLResponse(f"Dhan authentication failed: {exc}", status_code=400)
+    expiry = result["token_expiry"].isoformat() if result["token_expiry"] else "unknown"
+    return HTMLResponse(f"Dhan authentication completed. Token expiry: {expiry}. You can close this tab.")
+
+
+@router.post("/api/dhan/postback")
+async def dhan_postback(request: Request):
+    payload = await request.json()
+    db = next(get_session())
+    from app.repositories.logs import LogRepository
+
+    LogRepository(db).alert(
+        alert_type="dhan_postback",
+        message="Dhan postback received",
+        delivery_status="received",
+        details=payload if isinstance(payload, dict) else {"payload": payload},
+    )
     return {"ok": True}
 
 

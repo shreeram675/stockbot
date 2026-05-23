@@ -29,6 +29,10 @@ Required production variables:
 - `TELEGRAM_WEBHOOK_SECRET`
 - `TELEGRAM_WEBHOOK_URL`
 - `DHAN_ACCESS_TOKEN`
+- `DHAN_API_KEY`
+- `DHAN_API_SECRET`
+- `DHAN_REDIRECT_URL=https://stockbot-rho.vercel.app/api/dhan/callback`
+- `DHAN_POSTBACK_URL=https://stockbot-rho.vercel.app/api/dhan/postback`
 - `GEMINI_API_KEY`
 - `FINNHUB_API_KEY`
 - `CRON_SECRET`
@@ -63,4 +67,21 @@ Do not paste real tokens into shared logs.
 - Monthly workflow: 12th of every month, 03:30 UTC.
 
 Cron endpoints require `Authorization: Bearer <CRON_SECRET>` when `CRON_SECRET` is configured.
+
+## 6. Dhan API-Key Auth
+
+Set these URLs in Dhan:
+
+```text
+Redirect URL: https://stockbot-rho.vercel.app/api/dhan/callback
+Postback URL: https://stockbot-rho.vercel.app/api/dhan/postback
+```
+
+After deployment, open:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/auth/start
+```
+
+This generates Dhan consent and redirects you to Dhan login. After approval, Dhan calls `/api/dhan/callback` with `tokenId`; the app consumes it and stores the resulting access token encrypted in Supabase.
 

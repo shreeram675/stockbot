@@ -9,6 +9,7 @@ The assistant runs in Telegram only. There is no dashboard and no frontend.
 - Accepts Telegram webhook updates.
 - Rejects every Telegram user except `TELEGRAM_ALLOWED_USER_ID`.
 - Fetches Dhan holdings and positions.
+- Supports Dhan API-key consent authentication with encrypted token persistence.
 - Enriches holdings with `yfinance` market data where available.
 - Stores portfolio snapshots in Supabase PostgreSQL through SQLAlchemy.
 - Generates portfolio reports, health scoring, and Gemini-grounded analysis.
@@ -36,6 +37,30 @@ Fill `.env`, then run checks:
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy app
 ```
+
+## Dhan Authentication
+
+Production Dhan auth should use the API-key consent flow, not manual 24-hour tokens.
+
+Start the consent flow from:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/auth/start
+```
+
+Dhan redirects back to:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/callback
+```
+
+Dhan postbacks should use:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/postback
+```
+
+`DHAN_ACCESS_TOKEN` is still supported as a backward-compatible fallback.
 
 Local API:
 
@@ -66,4 +91,3 @@ Local API:
 - [API Reference](api_reference.md)
 - [Manual Steps](manual_steps.md)
 - [Troubleshooting](troubleshooting.md)
-

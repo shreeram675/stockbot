@@ -32,20 +32,42 @@ postgresql+psycopg://...
 
 1. Log in to Dhan Web.
 2. Go to Profile / DhanHQ Trading APIs.
-3. Request access if needed.
-4. Generate access token.
-5. Set:
+3. Request API-key access if needed.
+4. Create API key and API secret.
+5. Configure Dhan URLs:
+
+```text
+Redirect URL: https://stockbot-rho.vercel.app/api/dhan/callback
+Postback URL: https://stockbot-rho.vercel.app/api/dhan/postback
+```
+
+6. Set:
 
 ```text
 DHAN_CLIENT_ID=
-DHAN_ACCESS_TOKEN=
+DHAN_API_KEY=
+DHAN_API_SECRET=
 DHAN_API_BASE_URL=https://api.dhan.co
+DHAN_AUTH_BASE_URL=https://auth.dhan.co
+DHAN_REDIRECT_URL=https://stockbot-rho.vercel.app/api/dhan/callback
+DHAN_POSTBACK_URL=https://stockbot-rho.vercel.app/api/dhan/postback
 ```
+
+7. After deployment, start auth:
+
+```text
+https://stockbot-rho.vercel.app/api/dhan/auth/start
+```
+
+The app supports `DHAN_ACCESS_TOKEN` as a fallback, but production should use API-key consent auth because manual tokens expire.
 
 The implementation uses documented Dhan v2 endpoints:
 
 - `GET /v2/holdings`
 - `GET /v2/positions`
+- `POST /app/generate-consent`
+- `GET /app/consumeApp-consent`
+- `POST /api/dhan/postback`
 
 ## 4. Gemini
 
@@ -94,4 +116,3 @@ Configured defaults:
 - Budget: `Rs. 5,000`
 - Workflow date: `12th`
 - Risk profile: `Balanced`
-

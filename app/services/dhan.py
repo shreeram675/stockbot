@@ -6,16 +6,15 @@ from app.services.http import async_client
 
 
 class DhanService:
-    def __init__(self) -> None:
+    def __init__(self, access_token: str | None = None) -> None:
         self.settings = get_settings()
+        self.access_token = access_token
 
     def _headers(self) -> dict[str, str]:
-        if not self.settings.dhan_access_token:
+        token = self.access_token or self.settings.dhan_access_token
+        if not token:
             raise MissingConfigurationError("DHAN_ACCESS_TOKEN")
-        headers = {"Content-Type": "application/json", "access-token": self.settings.dhan_access_token}
-        if self.settings.dhan_client_id:
-            headers["client-id"] = self.settings.dhan_client_id
-        return headers
+        return {"Content-Type": "application/json", "access-token": token}
 
     def _error_message(self, response: httpx.Response) -> str:
         try:
