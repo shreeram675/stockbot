@@ -4,7 +4,7 @@ from alembic import context
 
 from app.core.config import get_settings
 from app.db.models import *  # noqa: F403
-from app.db.session import Base
+from app.db.session import Base, normalize_database_url
 
 config = context.config
 if config.config_file_name is not None:
@@ -17,7 +17,7 @@ def get_url() -> str:
     settings = get_settings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required for migrations")
-    return settings.database_url
+    return normalize_database_url(settings.database_url)
 
 
 def run_migrations_offline() -> None:
@@ -47,4 +47,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

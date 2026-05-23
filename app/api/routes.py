@@ -2,7 +2,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from telegram import Bot, Update
 
 from app.core.config import get_settings
-from app.core.errors import MissingConfigurationError
+from app.core.errors import ExternalServiceError, MissingConfigurationError
 from app.db.session import get_session
 from app.repositories.portfolio import PortfolioRepository
 from app.repositories.users import UserRepository
@@ -49,13 +49,7 @@ async def _send_report(kind: str, authorization: str | None) -> dict[str, str]:
     user = users.get_or_create(settings.telegram_allowed_user_id, "Owner")
     service = ReportService(users, portfolio)
     bot = Bot(settings.telegram_bot_token)
-    if kind == "daily-morning":
-        text = await service.daily_morning(user.id)
-    elif kind == "daily-close":
-        text = await service.daily_close(user.id)
-    elif kind == "weekly":
-        text = await service.weekly(user.id)
-    elif kind == "monthly":
+    if kind == "monthly":
         await bot.send_message(
             settings.telegram_allowed_user_id,
             text=(
@@ -67,8 +61,19 @@ async def _send_report(kind: str, authorization: str | None) -> dict[str, str]:
             reply_markup=monthly_risk_keyboard(),
         )
         return {"status": "sent", "kind": kind}
-    else:
-        raise HTTPException(status_code=404, detail="Unknown report")
+    try:
+        if kind == "daily-morning":
+            text = await service.daily_morning(user.id)
+        elif kind == "daily-close":
+            text = await service.daily_close(user.id)
+        elif kind == "weekly":
+            text = await service.weekly(user.id)
+        else:
+            raise HTTPException(status_code=404, detail="Unknown report")
+    except (MissingConfigurationError, ExternalServiceError) as exc:
+        text = f"⚠️ Scheduled report unavailable\n\n{exc}"
+        await bot.send_message(settings.telegram_allowed_user_id, text=text)
+        return {"status": "degraded", "kind": kind, "error": str(exc)}
     await bot.send_message(settings.telegram_allowed_user_id, text=text)
     return {"status": "sent", "kind": kind}
 

@@ -7,6 +7,14 @@ from app.core.config import get_settings
 from app.core.errors import MissingConfigurationError
 
 
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -15,11 +23,7 @@ def build_engine():
     settings = get_settings()
     if not settings.database_url:
         raise MissingConfigurationError("DATABASE_URL")
-    database_url = settings.database_url
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    database_url = normalize_database_url(settings.database_url)
     return create_engine(database_url, pool_pre_ping=True, pool_size=2, max_overflow=2)
 
 

@@ -14,16 +14,14 @@ class MarketDataService:
 
     def yahoo_symbol(self, symbol: str) -> str:
         clean = symbol.strip().upper()
-        if clean.startswith("^") or clean.endswith((".NS", ".BO")):
+        if clean.startswith("^") or clean.endswith((".NS", ".BO")) or "=" in clean:
             return clean
         return f"{clean}.NS"
 
     async def quote(self, symbol: str) -> dict:
-        ticker = yf.Ticker(self.yahoo_symbol(symbol))
+        yahoo_symbol = self.yahoo_symbol(symbol)
         try:
-            info = await self._to_thread(lambda: ticker.fast_info)
-            price = float(info.get("last_price") or info.get("lastPrice") or 0)
-            previous_close = float(info.get("previous_close") or info.get("previousClose") or 0)
+            price, previous_close = await self._to_thread(lambda: self._quote_from_history(yahoo_symbol))
             if price <= 0:
                 raise ValueError("missing current price")
             return {
@@ -38,6 +36,24 @@ class MarketDataService:
             }
         except Exception as exc:
             raise ExternalServiceError("yfinance", f"quote unavailable for {symbol}: {exc}") from exc
+
+    def _quote_from_history(self, yahoo_symbol: str) -> tuple[float, float]:
+        history = yf.download(
+            yahoo_symbol,
+            period="5d",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        if history.empty:
+            raise ValueError("empty price history")
+        close = history["Close"].dropna()
+        if close.empty:
+            raise ValueError("missing close prices")
+        price = float(close.iloc[-1])
+        previous_close = float(close.iloc[-2]) if len(close) > 1 else 0.0
+        return price, previous_close
 
     async def sector(self, symbol: str) -> str | None:
         ticker = yf.Ticker(self.yahoo_symbol(symbol))
@@ -84,4 +100,3 @@ class MarketDataService:
 
 def today_iso() -> str:
     return datetime.now(UTC).date().isoformat()
-

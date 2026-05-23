@@ -12,14 +12,25 @@ class DhanService:
     def _headers(self) -> dict[str, str]:
         if not self.settings.dhan_access_token:
             raise MissingConfigurationError("DHAN_ACCESS_TOKEN")
-        return {"Content-Type": "application/json", "access-token": self.settings.dhan_access_token}
+        headers = {"Content-Type": "application/json", "access-token": self.settings.dhan_access_token}
+        if self.settings.dhan_client_id:
+            headers["client-id"] = self.settings.dhan_client_id
+        return headers
+
+    def _error_message(self, response: httpx.Response) -> str:
+        try:
+            body = response.json()
+        except ValueError:
+            body = response.text[:500]
+        return f"HTTP {response.status_code}: {body}"
 
     async def get_holdings(self) -> list[dict]:
         url = f"{self.settings.dhan_api_base_url.rstrip('/')}/v2/holdings"
         try:
             async with async_client() as client:
                 response = await client.get(url, headers=self._headers())
-                response.raise_for_status()
+                if response.is_error:
+                    raise ExternalServiceError("Dhan", f"holdings request failed: {self._error_message(response)}")
                 data = response.json()
         except MissingConfigurationError:
             raise
@@ -34,7 +45,8 @@ class DhanService:
         try:
             async with async_client() as client:
                 response = await client.get(url, headers=self._headers())
-                response.raise_for_status()
+                if response.is_error:
+                    raise ExternalServiceError("Dhan", f"positions request failed: {self._error_message(response)}")
                 data = response.json()
         except MissingConfigurationError:
             raise
@@ -43,4 +55,3 @@ class DhanService:
         if not isinstance(data, list):
             raise ExternalServiceError("Dhan", "positions response was not a list")
         return data
-

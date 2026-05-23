@@ -13,6 +13,8 @@ def configure_logging() -> None:
         stream=sys.stdout,
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
     )
+    for noisy_logger in ("httpx", "httpcore", "telegram", "telegram.ext"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -25,4 +27,3 @@ def configure_logging() -> None:
         ),
         cache_logger_on_first_use=True,
     )
-
