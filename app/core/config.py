@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +46,30 @@ class Settings(BaseSettings):
     http_timeout_seconds: int = 20
     http_retry_attempts: int = 3
     cron_secret: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def blank_strings_to_none(cls, data):
+        if not isinstance(data, dict):
+            return data
+        optional_blank_fields = {
+            "telegram_allowed_user_id",
+            "telegram_bot_token",
+            "telegram_webhook_secret",
+            "telegram_webhook_url",
+            "database_url",
+            "supabase_url",
+            "supabase_service_role_key",
+            "dhan_client_id",
+            "dhan_access_token",
+            "gemini_api_key",
+            "finnhub_api_key",
+            "cron_secret",
+        }
+        return {
+            key: None if key in optional_blank_fields and value == "" else value
+            for key, value in data.items()
+        }
 
     @field_validator("default_risk_profile")
     @classmethod
