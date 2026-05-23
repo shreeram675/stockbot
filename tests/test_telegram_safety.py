@@ -1,0 +1,110 @@
+from types import SimpleNamespace
+
+import pytest
+
+from app.core.config import get_settings
+from app.telegram.bot import (
+    ask_command,
+    build_application,
+    portfolio_command,
+    risk_command,
+    start,
+    suggest_command,
+)
+
+
+class FakeMessage:
+    def __init__(self) -> None:
+        self.replies: list[str] = []
+
+    async def reply_text(self, text: str, **kwargs) -> None:
+        self.replies.append(text)
+
+
+class FakeUser:
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+        self.full_name = "Test User"
+
+
+class FakeUpdate:
+    def __init__(self, user_id: int) -> None:
+        self.effective_user = FakeUser(user_id)
+        self.effective_message = FakeMessage()
+        self.callback_query = None
+
+
+def configure_telegram_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_ID", "111")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEF")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DHAN_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_user_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_telegram_only(monkeypatch)
+    update = FakeUpdate(222)
+    await start(update, SimpleNamespace(args=[]))
+    assert update.effective_message.replies == ["Unauthorized user."]
+
+
+@pytest.mark.asyncio
+async def test_authorized_start_works_without_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_telegram_only(monkeypatch)
+    update = FakeUpdate(111)
+    await start(update, SimpleNamespace(args=[]))
+    assert "Stockbot is ready" in update.effective_message.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_provider_backed_commands_return_transparent_database_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram_only(monkeypatch)
+    for command, args in [
+        (portfolio_command, []),
+        (ask_command, ["What", "is", "my", "risk?"]),
+        (suggest_command, []),
+    ]:
+        update = FakeUpdate(111)
+        await command(update, SimpleNamespace(args=args))
+        assert "Database unavailable" in update.effective_message.replies[0]
+        assert "DATABASE_URL" in update.effective_message.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_risk_view_falls_back_to_default_without_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_telegram_only(monkeypatch)
+    update = FakeUpdate(111)
+    await risk_command(update, SimpleNamespace(args=[]))
+    assert "Current default: Balanced" in update.effective_message.replies[-1]
+    assert "Persistence unavailable" in update.effective_message.replies[-1]
+
+
+def test_command_registration(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_telegram_only(monkeypatch)
+    app = build_application()
+    names = [
+        getattr(handler.callback, "__name__", type(handler).__name__)
+        for group in app.handlers.values()
+        for handler in group
+    ]
+    assert names == [
+        "start",
+        "help_command",
+        "portfolio_command",
+        "holdings_command",
+        "performance_command",
+        "risk_command",
+        "health_command",
+        "suggest_command",
+        "why_command",
+        "ask_command",
+        "simulate_command",
+        "monthly_risk_callback",
+    ]
+

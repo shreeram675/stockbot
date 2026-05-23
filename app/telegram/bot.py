@@ -31,6 +31,11 @@ async def _reject(update: Update) -> None:
         await update.effective_message.reply_text("Unauthorized user.")
 
 
+async def _reply(update: Update, text: str) -> None:
+    if update.effective_message:
+        await update.effective_message.reply_text(text)
+
+
 def _repos():
     db = next(get_session())
     return db, UserRepository(db), PortfolioRepository(db)
@@ -40,7 +45,14 @@ async def require_user(update: Update):
     if not _authorized(update):
         await _reject(update)
         return None
-    db, users, portfolio = _repos()
+    try:
+        db, users, portfolio = _repos()
+    except MissingConfigurationError as exc:
+        await _reply(
+            update,
+            f"⚠️ Database unavailable.\n\n{exc}\n\nTelegram is reachable, but portfolio features need DATABASE_URL.",
+        )
+        return None
     tg_user = update.effective_user
     assert tg_user is not None
     user = users.get_or_create(tg_user.id, tg_user.full_name)
@@ -51,8 +63,8 @@ async def require_user(update: Update):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    state = await require_user(update)
-    if state is None:
+    if not _authorized(update):
+        await _reject(update)
         return
     await update.effective_message.reply_text(
         "👋 Stockbot is ready.\n\n"
@@ -139,8 +151,18 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        await _reject(update)
+        return
     state = await require_user(update)
     if state is None:
+        if not context.args:
+            await _reply(
+                update,
+                "🛡 Risk Profile\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"Current default: {get_settings().default_risk_profile}\n\n"
+                "Persistence unavailable until DATABASE_URL is configured.",
+            )
         return
     _, users, _, user = state
     allowed = {"Conservative", "Balanced", "Aggressive", "Custom"}
