@@ -35,12 +35,16 @@ class FakeUpdate:
 
 
 def configure_telegram_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.db.session as db_session
+
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_ID", "111")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEF")
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.delenv("DHAN_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    db_session.engine = None
+    db_session.SessionLocal = None
     get_settings.cache_clear()
 
 
@@ -107,4 +111,3 @@ def test_command_registration(monkeypatch: pytest.MonkeyPatch) -> None:
         "simulate_command",
         "monthly_risk_callback",
     ]
-
