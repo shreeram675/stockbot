@@ -2,7 +2,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -85,6 +85,12 @@ class DhanAuthService:
         )
         return {"consent_id": str(consent_id), "login_url": login_url, "raw": data}
 
+    def auth_start_url(self) -> str:
+        redirect = urlsplit(self.settings.dhan_redirect_url)
+        if not redirect.scheme or not redirect.netloc:
+            raise MissingConfigurationError("DHAN_REDIRECT_URL")
+        return f"{redirect.scheme}://{redirect.netloc}/api/dhan/auth/start"
+
     async def consume_consent(self, token_id: str) -> dict:
         _, api_key, api_secret = self._require_api_credentials()
         url = f"{self.settings.dhan_auth_base_url.rstrip('/')}/app/consumeApp-consent"
@@ -139,6 +145,16 @@ class DhanAuthService:
                 "stored API-key access token is expired; visit /api/dhan/auth/start to reconnect",
             )
         return DhanTokenCipher().decrypt(row.encrypted_access_token)
+
+    def has_valid_stored_token(self) -> bool:
+        if self.db is None:
+            return False
+        row = self.db.scalar(
+            select(DhanAuthToken)
+            .where(DhanAuthToken.client_id == self.settings.dhan_client_id)
+            .order_by(DhanAuthToken.created_at.desc())
+        )
+        return bool(row and (row.token_expiry is None or row.token_expiry > datetime.now(UTC)))
 
     def _json_or_error(self, response: httpx.Response, action: str) -> dict:
         try:

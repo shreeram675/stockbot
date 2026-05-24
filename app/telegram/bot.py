@@ -1,6 +1,8 @@
 # mypy: disable-error-code="union-attr,arg-type,index,assignment"
 
+import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from app.core.config import get_settings
@@ -19,6 +21,9 @@ from app.telegram.formatters import (
     format_portfolio,
 )
 
+logger = structlog.get_logger(__name__)
+TELEGRAM_MESSAGE_LIMIT = 3900
+
 
 def _authorized(update: Update) -> bool:
     settings = get_settings()
@@ -27,13 +32,38 @@ def _authorized(update: Update) -> bool:
 
 
 async def _reject(update: Update) -> None:
-    if update.effective_message:
-        await update.effective_message.reply_text("Unauthorized user.")
+    await _reply(update, "Unauthorized user.")
 
 
 async def _reply(update: Update, text: str) -> None:
     if update.effective_message:
-        await update.effective_message.reply_text(text)
+        await _reply_to_message(update.effective_message, text)
+
+
+async def _reply_to_message(message, text: str) -> None:
+    for chunk in _telegram_chunks(text):
+        try:
+            await message.reply_text(chunk)
+        except TelegramError as exc:
+            logger.warning("telegram_reply_failed", error=str(exc))
+            return
+
+
+def _telegram_chunks(text: str) -> list[str]:
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= TELEGRAM_MESSAGE_LIMIT:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, TELEGRAM_MESSAGE_LIMIT)
+        if split_at < 1000:
+            split_at = TELEGRAM_MESSAGE_LIMIT
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    return chunks
 
 
 def _repos():
@@ -66,7 +96,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         await _reject(update)
         return
-    await update.effective_message.reply_text(
+    await _reply(
+        update,
         "👋 Stockbot is ready.\n\n"
         "Use /portfolio, /holdings, /performance, /risk, /health, /suggest, /why, /ask, or /simulate."
     )
@@ -76,7 +107,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _authorized(update):
         await _reject(update)
         return
-    await update.effective_message.reply_text(
+    await _reply(
+        update,
         "🧭 Commands\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "/portfolio - portfolio value, P&L, allocation\n"
@@ -106,9 +138,9 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 commentary = await ai.generate(f"Give concise portfolio commentary using only this data: {view}")
             except Exception as exc:
                 view.statuses.append(type(view.statuses[0])("Gemini", False, str(exc)))
-        await update.effective_message.reply_text(format_portfolio(view, commentary))
+        await _reply(update, format_portfolio(view, commentary))
     except (MissingConfigurationError, ExternalServiceError) as exc:
-        await update.effective_message.reply_text(f"⚠️ Portfolio unavailable.\n\n{exc}")
+        await _reply(update, f"⚠️ Portfolio unavailable.\n\n{exc}")
 
 
 async def holdings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,9 +150,9 @@ async def holdings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     _, _, portfolio_repo, user = state
     try:
         view = await PortfolioService(portfolio_repo).fetch_live_portfolio(user.id, persist=True)
-        await update.effective_message.reply_text(format_holdings(view))
+        await _reply(update, format_holdings(view))
     except (MissingConfigurationError, ExternalServiceError) as exc:
-        await update.effective_message.reply_text(f"⚠️ Holdings unavailable.\n\n{exc}")
+        await _reply(update, f"⚠️ Holdings unavailable.\n\n{exc}")
 
 
 async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -131,7 +163,7 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     snapshots = portfolio_repo.snapshots(user.id, 60)
     latest = snapshots[0] if snapshots else None
     if latest is None:
-        await update.effective_message.reply_text("📈 Performance\n\nNo snapshots yet. Run /portfolio first.")
+        await _reply(update, "📈 Performance\n\nNo snapshots yet. Run /portfolio first.")
         return
     daily = snapshots[1] if len(snapshots) > 1 else None
     weekly = snapshots[6] if len(snapshots) > 6 else None
@@ -147,7 +179,7 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "worst_performer": worst.symbol if worst else None,
         "trend": "Based only on persisted snapshots; run /portfolio daily for better trend quality.",
     }
-    await update.effective_message.reply_text(format_performance(perf))
+    await _reply(update, format_performance(perf))
 
 
 async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -170,15 +202,17 @@ async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         mode = context.args[0].strip().title()
         custom_notes = " ".join(context.args[1:]).strip() or None
         if mode not in allowed:
-            await update.effective_message.reply_text(
+            await _reply(
+                update,
                 "⚠️ Supported risk modes: Conservative, Balanced, Aggressive, Custom."
             )
             return
         pref = users.set_risk(user.id, mode, custom_notes)
-        await update.effective_message.reply_text(f"✅ Risk profile updated: {pref.mode}")
+        await _reply(update, f"✅ Risk profile updated: {pref.mode}")
         return
     latest = users.latest_risk(user.id)
-    await update.effective_message.reply_text(
+    await _reply(
+        update,
         f"🛡 Risk Profile\n━━━━━━━━━━━━━━━━━━━━\nCurrent: {latest.mode if latest else 'Balanced'}"
     )
 
@@ -194,7 +228,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             view = await PortfolioService(portfolio_repo).fetch_live_portfolio(user.id, persist=True)
             health = PortfolioAnalytics().health(view)
         except Exception as exc:
-            await update.effective_message.reply_text(f"⚠️ Health unavailable.\n\n{exc}")
+            await _reply(update, f"⚠️ Health unavailable.\n\n{exc}")
             return
     else:
         holdings = portfolio_repo.holdings_for_snapshot(latest.id)
@@ -209,7 +243,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             },
         )
         health = PortfolioAnalytics().health(view)
-    await update.effective_message.reply_text(format_health(health))
+    await _reply(update, format_health(health))
 
 
 async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -227,13 +261,14 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             get_settings().monthly_investment_budget_inr,
             persist=True,
         )
-        await update.effective_message.reply_text(f"💡 Diversification Suggestion\n━━━━━━━━━━━━━━━━━━━━\n{text}")
+        await _reply(update, f"💡 Diversification Suggestion\n━━━━━━━━━━━━━━━━━━━━\n{text}")
     except MissingConfigurationError as exc:
-        await update.effective_message.reply_text(
+        await _reply(
+            update,
             f"⚠️ Suggestion unavailable.\n\n{exc}\n\nAI recommendations require Gemini and provider keys."
         )
     except ExternalServiceError as exc:
-        await update.effective_message.reply_text(f"⚠️ Suggestion unavailable.\n\n{exc}")
+        await _reply(update, f"⚠️ Suggestion unavailable.\n\n{exc}")
 
 
 async def why_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -243,7 +278,7 @@ async def why_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _, _, portfolio_repo, user = state
     recommendation = portfolio_repo.latest_recommendation(user.id)
     if recommendation is None:
-        await update.effective_message.reply_text("🤔 No stored recommendation yet. Run /suggest first.")
+        await _reply(update, "🤔 No stored recommendation yet. Run /suggest first.")
         return
     question = " ".join(context.args).strip() or "Explain the reasoning behind the latest recommendation."
     try:
@@ -251,9 +286,9 @@ async def why_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Use only this stored recommendation and context to answer.\nQuestion: {question}\n"
             f"Recommendation: {recommendation.recommendation}\nContext: {recommendation.context}"
         )
-        await update.effective_message.reply_text(f"🧠 Why\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
+        await _reply(update, f"🧠 Why\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
     except Exception as exc:
-        await update.effective_message.reply_text(f"⚠️ AI model unavailable.\n\n{exc}")
+        await _reply(update, f"⚠️ AI model unavailable.\n\n{exc}")
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -263,11 +298,11 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _, _, portfolio_repo, user = state
     question = " ".join(context.args).strip()
     if not question:
-        await update.effective_message.reply_text("Ask like this: /ask What is my biggest concentration risk?")
+        await _reply(update, "Ask like this: /ask What is my biggest concentration risk?")
         return
     latest = portfolio_repo.latest_snapshot(user.id)
     if latest is None:
-        await update.effective_message.reply_text("Run /portfolio first so I have grounded portfolio data.")
+        await _reply(update, "Run /portfolio first so I have grounded portfolio data.")
         return
     holdings = portfolio_repo.holdings_for_snapshot(latest.id)
     try:
@@ -275,9 +310,9 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "Answer using only this portfolio data. If unavailable, say so.\n"
             f"Question: {question}\nSnapshot: {latest.raw_payload}\nHoldings: {[h.raw_payload for h in holdings]}"
         )
-        await update.effective_message.reply_text(f"💬 Answer\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
+        await _reply(update, f"💬 Answer\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
     except Exception as exc:
-        await update.effective_message.reply_text(f"⚠️ AI model unavailable.\n\n{exc}")
+        await _reply(update, f"⚠️ AI model unavailable.\n\n{exc}")
 
 
 async def simulate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -289,7 +324,7 @@ async def simulate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         years_arg = context.args[1].lower() if len(context.args) > 1 else "10y"
         years = int(years_arg.removesuffix("y"))
     except Exception:
-        await update.effective_message.reply_text("Use: /simulate 5000 10y")
+        await _reply(update, "Use: /simulate 5000 10y")
         return
     rates = [0.06, 0.10, 0.14]
     lines = [
@@ -307,7 +342,7 @@ async def simulate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         monthly = rate / 12
         future_value = amount * (((1 + monthly) ** months - 1) / monthly) * (1 + monthly)
         lines.append(f"{rate * 100:.0f}% CAGR: Rs. {future_value:,.0f}")
-    await update.effective_message.reply_text("\n".join(lines))
+    await _reply(update, "\n".join(lines))
 
 
 def monthly_risk_keyboard() -> InlineKeyboardMarkup:
@@ -352,7 +387,8 @@ async def monthly_risk_callback(update: Update, context: ContextTypes.DEFAULT_TY
             get_settings().monthly_investment_budget_inr,
             persist=True,
         )
-        await query.message.reply_text(
+        await _reply_to_message(
+            query.message,
             "🗓 Monthly Investment Recommendation\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Risk: {mode}\n"
@@ -360,7 +396,7 @@ async def monthly_risk_callback(update: Update, context: ContextTypes.DEFAULT_TY
             f"{text}"
         )
     except Exception as exc:
-        await query.message.reply_text(f"⚠️ Monthly recommendation unavailable.\n\n{exc}")
+        await _reply_to_message(query.message, f"⚠️ Monthly recommendation unavailable.\n\n{exc}")
 
 
 def build_application() -> Application:

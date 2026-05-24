@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     dhan_auth_base_url: str = "https://auth.dhan.co"
     dhan_redirect_url: str = "https://stockbot-rho.vercel.app/api/dhan/callback"
     dhan_postback_url: str = "https://stockbot-rho.vercel.app/api/dhan/postback"
+    dhan_daily_auth_time_ist: str = "08:30"
 
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"

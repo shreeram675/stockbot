@@ -13,13 +13,18 @@ from app.core.errors import ExternalServiceError, MissingConfigurationError
 from app.db.session import get_session
 from app.repositories.portfolio import PortfolioRepository
 from app.repositories.users import UserRepository
+from app.services.analytics import PortfolioAnalytics
 from app.services.dhan_auth import DhanAuthService
 from app.services.http import async_client
+from app.services.portfolio import PortfolioService
+from app.services.recommendations import RecommendationService
 from app.services.reports import ReportService
 from app.telegram.bot import build_application, monthly_risk_keyboard
+from app.telegram.formatters import format_health, format_portfolio
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
+TELEGRAM_MESSAGE_LIMIT = 3900
 
 
 def _assert_cron_auth(authorization: str | None) -> None:
@@ -85,6 +90,72 @@ def _assert_dhan_debug_auth(authorization: str | None, debug_fingerprint: str | 
     if settings.dhan_api_secret and debug_fingerprint == expected:
         return
     raise HTTPException(status_code=403, detail="Unauthorized Dhan debug request")
+
+
+def _telegram_chunks(text: str) -> list[str]:
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= TELEGRAM_MESSAGE_LIMIT:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, TELEGRAM_MESSAGE_LIMIT)
+        if split_at < 1000:
+            split_at = TELEGRAM_MESSAGE_LIMIT
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    return chunks
+
+
+async def _send_telegram_text(bot: Bot, chat_id: int, text: str) -> None:
+    for chunk in _telegram_chunks(text):
+        await bot.send_message(chat_id, text=chunk)
+
+
+async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
+    settings = get_settings()
+    if not settings.telegram_allowed_user_id:
+        return
+    users = UserRepository(db)
+    portfolio_repo = PortfolioRepository(db)
+    user = users.get_or_create(settings.telegram_allowed_user_id, "Owner")
+    risk = users.latest_risk(user.id)
+    try:
+        view = await PortfolioService(portfolio_repo).fetch_live_portfolio(user.id, persist=True)
+        health = PortfolioAnalytics().health(view)
+        await _send_telegram_text(bot, settings.telegram_allowed_user_id, format_portfolio(view))
+        await _send_telegram_text(bot, settings.telegram_allowed_user_id, format_health(health))
+        try:
+            recommendation = await RecommendationService(portfolio_repo).suggest(
+                user_id=user.id,
+                portfolio=view,
+                risk_profile=risk.mode if risk else settings.default_risk_profile,
+                budget_inr=settings.monthly_investment_budget_inr,
+                persist=True,
+            )
+            await _send_telegram_text(
+                bot,
+                settings.telegram_allowed_user_id,
+                (
+                    "💡 Today's Suggestion\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{recommendation}"
+                ),
+            )
+        except Exception as exc:
+            await _send_telegram_text(
+                bot,
+                settings.telegram_allowed_user_id,
+                f"⚠️ Suggestion unavailable today.\n\n{exc}",
+            )
+    except Exception as exc:
+        await _send_telegram_text(
+            bot,
+            settings.telegram_allowed_user_id,
+            f"⚠️ Dhan authenticated, but today's portfolio activity failed.\n\n{exc}",
+        )
 
 
 @router.post("/api/telegram/webhook")
@@ -157,6 +228,19 @@ async def dhan_callback(request: Request):
             status_code=500,
         )
     expiry = result["token_expiry"].isoformat() if result["token_expiry"] else "unknown"
+    settings = get_settings()
+    if settings.telegram_bot_token and settings.telegram_allowed_user_id:
+        bot = Bot(settings.telegram_bot_token)
+        await bot.send_message(
+            settings.telegram_allowed_user_id,
+            text=(
+                "✅ Dhan authenticated for today\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"Token expiry: {expiry}\n\n"
+                "Running today's portfolio activity now."
+            ),
+        )
+        await _send_authenticated_daily_activity(db, bot)
     return HTMLResponse(f"Dhan authentication completed. Token expiry: {expiry}. You can close this tab.")
 
 
@@ -251,8 +335,27 @@ async def _send_report(kind: str, authorization: str | None) -> dict[str, str]:
     users = UserRepository(db)
     portfolio = PortfolioRepository(db)
     user = users.get_or_create(settings.telegram_allowed_user_id, "Owner")
+    if kind != "daily-auth" and not DhanAuthService(db).has_valid_stored_token():
+        return {
+            "status": "skipped",
+            "kind": kind,
+            "reason": "No valid stored Dhan token. Daily activity waits for user re-authentication.",
+        }
     service = ReportService(users, portfolio)
     bot = Bot(settings.telegram_bot_token)
+    if kind == "daily-auth":
+        auth_url = DhanAuthService(db).auth_start_url()
+        await bot.send_message(
+            settings.telegram_allowed_user_id,
+            text=(
+                "🔐 Dhan Re-authentication\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"Authenticate for today's portfolio updates and suggestions:\n{auth_url}\n\n"
+                "If you skip this, today's Dhan-backed activity will be skipped. "
+                "No portfolio data will be refreshed without a valid token."
+            ),
+        )
+        return {"status": "sent", "kind": kind}
     if kind == "monthly":
         await bot.send_message(
             settings.telegram_allowed_user_id,
@@ -280,6 +383,11 @@ async def _send_report(kind: str, authorization: str | None) -> dict[str, str]:
         return {"status": "degraded", "kind": kind, "error": str(exc)}
     await bot.send_message(settings.telegram_allowed_user_id, text=text)
     return {"status": "sent", "kind": kind}
+
+
+@router.get("/api/cron/daily-auth")
+async def daily_auth(authorization: str | None = Header(None)):
+    return await _send_report("daily-auth", authorization)
 
 
 @router.get("/api/cron/daily-morning")

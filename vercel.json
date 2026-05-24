@@ -8,6 +8,10 @@
   ],
   "crons": [
     {
+      "path": "/api/cron/daily-auth",
+      "schedule": "0 3 * * *"
+    },
+    {
       "path": "/api/cron/daily-morning",
       "schedule": "0 3 * * 1-5"
     },
