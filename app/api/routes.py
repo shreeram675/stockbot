@@ -177,6 +177,7 @@ async def dhan_debug_consume(
         raise MissingConfigurationError("DHAN_API_SECRET")
     url = f"{settings.dhan_auth_base_url.rstrip('/')}/app/consumeApp-consent"
     headers = {"app_id": settings.dhan_api_key, "app_secret": settings.dhan_api_secret}
+    persist_requested = request.query_params.get("persist", "").lower() in {"1", "true", "yes"}
     try:
         async with async_client() as client:
             response = await client.get(url, params={"tokenId": token_id}, headers=headers)
@@ -189,7 +190,7 @@ async def dhan_debug_consume(
         }
         for key, value in request.query_params.items()
     }
-    return {
+    debug_payload = {
         "deployment": _deployment_metadata(),
         "env_fingerprints": {
             "DHAN_API_KEY": _mask(settings.dhan_api_key),
@@ -207,6 +208,21 @@ async def dhan_debug_consume(
             "raw_text": _response_text(response),
         },
     }
+    if persist_requested:
+        try:
+            db = next(get_session())
+            result = await DhanAuthService(db).consume_consent(token_id)
+            debug_payload["persistence"] = {
+                "status": "success",
+                "token_expiry": result["token_expiry"].isoformat() if result["token_expiry"] else "unknown",
+            }
+        except Exception as exc:
+            debug_payload["persistence"] = {
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+    return debug_payload
 
 
 @router.post("/api/dhan/postback")
