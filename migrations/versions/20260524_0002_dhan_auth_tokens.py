@@ -5,8 +5,8 @@ Revises: 20260523_0001
 Create Date: 2026-05-24
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260524_0002"
 down_revision = "20260523_0001"
@@ -32,4 +32,3 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("dhan_auth_tokens")
-
