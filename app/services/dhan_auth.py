@@ -122,18 +122,18 @@ class DhanAuthService:
         return token
 
     def latest_access_token(self) -> str | None:
-        if self.settings.dhan_access_token:
-            return self.settings.dhan_access_token
         if self.db is None:
-            return None
+            return self.settings.dhan_access_token
         row = self.db.scalar(
             select(DhanAuthToken)
             .where(DhanAuthToken.client_id == self.settings.dhan_client_id)
             .order_by(DhanAuthToken.created_at.desc())
         )
         if row is None:
-            return None
+            return self.settings.dhan_access_token
         if row.token_expiry and row.token_expiry <= datetime.now(UTC):
+            if self.settings.dhan_access_token:
+                return self.settings.dhan_access_token
             raise ExternalServiceError(
                 "Dhan",
                 "stored API-key access token is expired; visit /api/dhan/auth/start to reconnect",

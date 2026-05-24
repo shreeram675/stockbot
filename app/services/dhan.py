@@ -23,11 +23,24 @@ class DhanService:
             body = response.text[:500]
         return f"HTTP {response.status_code}: {body}"
 
+    def _is_no_holdings_response(self, response: httpx.Response) -> bool:
+        try:
+            body = response.json()
+        except ValueError:
+            return False
+        return (
+            isinstance(body, dict)
+            and body.get("errorCode") == "DH-1111"
+            and str(body.get("errorMessage", "")).lower() == "no holdings available"
+        )
+
     async def get_holdings(self) -> list[dict]:
         url = f"{self.settings.dhan_api_base_url.rstrip('/')}/v2/holdings"
         try:
             async with async_client() as client:
                 response = await client.get(url, headers=self._headers())
+                if self._is_no_holdings_response(response):
+                    return []
                 if response.is_error:
                     raise ExternalServiceError("Dhan", f"holdings request failed: {self._error_message(response)}")
                 data = response.json()
