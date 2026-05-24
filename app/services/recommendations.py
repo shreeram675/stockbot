@@ -136,7 +136,7 @@ class RecommendationService:
             f"Budget: Rs. {budget_inr:,.0f}",
             f"Risk: {risk_profile}",
             f"Portfolio: {portfolio_state}",
-            f"Universe scanned: {len(set(scanned_universe))} NSE ETF/commodity symbols",
+            f"Universe scanned: {len(set(scanned_universe))} NSE ETF/equity/commodity symbols",
             "",
             "🧺 Buy List",
         ]
@@ -150,13 +150,13 @@ class RecommendationService:
                 "",
                 "⚠️ Notes",
                 "• Quantities use latest Yahoo/yfinance prices and may differ at order time.",
-                "• The selector avoids single-stock and single-sector concentration for this budget.",
+                "• Diversification is spread across multiple equity sleeves plus gold/stability.",
                 "• This is an educational model allocation, not SEBI-registered advice.",
                 "• Review liquidity, taxes, brokerage, and suitability before placing orders.",
             ]
         )
         if warnings:
-            lines.extend(["", "⚠️ Data Gaps", *[f"• {warning}" for warning in warnings[:3]]])
+            lines.extend(["", f"⚠️ Data: skipped {len(warnings)} candidate(s) with unavailable live prices."])
 
         context = {
             "budget_inr": budget_inr,
@@ -245,6 +245,19 @@ class RecommendationService:
             AllocationInstrument("HDFCNEXT50", "HDFC Nifty Next 50 ETF", "HDFC", "Next 50 equity ETF", "adds growth beyond large caps"),
             AllocationInstrument("ICICINXT50", "ICICI Nifty Next 50 ETF", "ICICI", "Next 50 equity ETF", "adds growth beyond large caps"),
         ]
+        equity_mid = [
+            AllocationInstrument("MID150BEES", "Nifty Midcap 150 ETF", "Nippon", "Mid-cap equity ETF", "adds mid-cap diversification"),
+            AllocationInstrument("MOM100", "Nifty Midcap 100 ETF", "Motilal Oswal", "Mid-cap equity ETF", "adds mid-cap diversification"),
+            AllocationInstrument("HDFCMID150", "HDFC Nifty Midcap 150 ETF", "HDFC", "Mid-cap equity ETF", "adds mid-cap diversification"),
+            AllocationInstrument("MIDCAPETF", "Mirae Midcap ETF", "Mirae", "Mid-cap equity ETF", "adds mid-cap diversification"),
+        ]
+        large_cap_stocks = [
+            AllocationInstrument("RELIANCE", "Reliance Industries", "Reliance", "Large-cap stock", "adds broad market leader exposure"),
+            AllocationInstrument("HDFCBANK", "HDFC Bank", "HDFC Bank", "Large-cap stock", "adds banking exposure"),
+            AllocationInstrument("INFY", "Infosys", "Infosys", "Large-cap stock", "adds IT services exposure"),
+            AllocationInstrument("ITC", "ITC", "ITC", "Large-cap stock", "adds defensive consumption exposure"),
+            AllocationInstrument("LT", "Larsen & Toubro", "L&T", "Large-cap stock", "adds infrastructure/capex exposure"),
+        ]
         gold = [
             AllocationInstrument("GOLDBEES", "Gold ETF", "Nippon", "Gold commodity ETF", "diversifier against equity/currency risk"),
             AllocationInstrument("HDFCGOLD", "HDFC Gold ETF", "HDFC", "Gold commodity ETF", "diversifier against equity/currency risk"),
@@ -259,10 +272,27 @@ class RecommendationService:
         ]
         mode = risk_profile.strip().title()
         if mode == "Conservative":
-            return [("Stability", liquid, 40), ("Core equity", equity_core, 35), ("Gold", gold, 25)]
+            return [
+                ("Stability", liquid, 30),
+                ("Core equity", equity_core, 25),
+                ("Gold", gold, 25),
+                ("Quality large-cap stock", large_cap_stocks, 20),
+            ]
         if mode == "Aggressive":
-            return [("Core equity", equity_core, 60), ("Growth equity", equity_growth, 25), ("Gold", gold, 15)]
-        return [("Core equity", equity_core, 55), ("Gold", gold, 25), ("Stability", liquid, 20)]
+            return [
+                ("Core equity", equity_core, 30),
+                ("Growth equity", equity_growth, 25),
+                ("Mid-cap equity", equity_mid, 25),
+                ("Quality large-cap stock", large_cap_stocks, 10),
+                ("Gold", gold, 10),
+            ]
+        return [
+            ("Core equity", equity_core, 30),
+            ("Growth equity", equity_growth, 20),
+            ("Mid-cap equity", equity_mid, 15),
+            ("Gold", gold, 20),
+            ("Stability", liquid, 15),
+        ]
 
     def _portfolio_context(self, portfolio: PortfolioView) -> dict:
         return {

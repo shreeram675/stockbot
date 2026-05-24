@@ -77,6 +77,9 @@ Local API:
 - `/performance`
 - `/risk`
 - `/risk Balanced`
+- `/model low risk`
+- `/model balanced`
+- `/model aggressive`
 - `/health`
 - `/suggest`
 - `/why`

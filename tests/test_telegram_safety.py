@@ -4,8 +4,10 @@ import pytest
 
 from app.core.config import get_settings
 from app.telegram.bot import (
+    _parse_risk_mode,
     ask_command,
     build_application,
+    model_command,
     portfolio_command,
     risk_command,
     start,
@@ -89,6 +91,21 @@ async def test_risk_view_falls_back_to_default_without_database(monkeypatch: pyt
     assert "Persistence unavailable" in update.effective_message.replies[-1]
 
 
+@pytest.mark.asyncio
+async def test_model_command_falls_back_without_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_telegram_only(monkeypatch)
+    update = FakeUpdate(111)
+    await model_command(update, SimpleNamespace(args=[]))
+    assert "Current default: Balanced" in update.effective_message.replies[-1]
+    assert "low risk" in update.effective_message.replies[-1]
+
+
+def test_model_risk_aliases() -> None:
+    assert _parse_risk_mode(["low", "risk"]) == ("Conservative", None)
+    assert _parse_risk_mode(["balanced"]) == ("Balanced", None)
+    assert _parse_risk_mode(["agrrecive"]) == ("Aggressive", None)
+
+
 def test_command_registration(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_telegram_only(monkeypatch)
     app = build_application()
@@ -104,6 +121,7 @@ def test_command_registration(monkeypatch: pytest.MonkeyPatch) -> None:
         "holdings_command",
         "performance_command",
         "risk_command",
+        "model_command",
         "health_command",
         "suggest_command",
         "why_command",

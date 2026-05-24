@@ -23,6 +23,21 @@ from app.telegram.formatters import (
 
 logger = structlog.get_logger(__name__)
 TELEGRAM_MESSAGE_LIMIT = 3900
+RISK_MODE_ALIASES = {
+    "low": "Conservative",
+    "low risk": "Conservative",
+    "conservative": "Conservative",
+    "safe": "Conservative",
+    "balanced": "Balanced",
+    "medium": "Balanced",
+    "normal": "Balanced",
+    "aggressive": "Aggressive",
+    "agressive": "Aggressive",
+    "agrrecive": "Aggressive",
+    "high": "Aggressive",
+    "high risk": "Aggressive",
+    "custom": "Custom",
+}
 
 
 def _authorized(update: Update) -> bool:
@@ -66,6 +81,19 @@ def _telegram_chunks(text: str) -> list[str]:
     return chunks
 
 
+def _parse_risk_mode(args: list[str]) -> tuple[str | None, str | None]:
+    raw = " ".join(args).strip()
+    if not raw:
+        return None, None
+    lowered = raw.lower()
+    for alias in sorted(RISK_MODE_ALIASES, key=len, reverse=True):
+        if lowered == alias or lowered.startswith(f"{alias} "):
+            mode = RISK_MODE_ALIASES[alias]
+            custom_notes = raw[len(alias):].strip() or None
+            return mode, custom_notes
+    return None, None
+
+
 def _repos():
     db = next(get_session())
     return db, UserRepository(db), PortfolioRepository(db)
@@ -99,7 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(
         update,
         "👋 Stockbot is ready.\n\n"
-        "Use /portfolio, /holdings, /performance, /risk, /health, /suggest, /why, /ask, or /simulate."
+        "Use /portfolio, /holdings, /performance, /risk, /model, /health, /suggest, /why, /ask, or /simulate."
     )
 
 
@@ -116,6 +144,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/performance - daily, weekly, monthly trends\n"
         "/risk - show risk profile\n"
         "/risk Balanced - set risk profile\n"
+        "/model aggressive - switch recommendation model\n"
+        "/model low risk - switch to conservative model\n"
         "/health - health score and reasoning\n"
         "/suggest - AI diversification recommendation\n"
         "/why - explain latest recommendation\n"
@@ -215,6 +245,40 @@ async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         update,
         f"🛡 Risk Profile\n━━━━━━━━━━━━━━━━━━━━\nCurrent: {latest.mode if latest else 'Balanced'}"
     )
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        await _reject(update)
+        return
+    state = await require_user(update)
+    if state is None:
+        if context.args:
+            await _reply(update, "Model switching needs DATABASE_URL so the setting can be saved.")
+        else:
+            await _reply(
+                update,
+                "Recommendation Model\n"
+                f"Current default: {get_settings().default_risk_profile}\n\n"
+                "Use /model low risk, /model balanced, or /model aggressive.",
+            )
+        return
+    _, users, _, user = state
+    if not context.args:
+        latest = users.latest_risk(user.id)
+        await _reply(
+            update,
+            "Recommendation Model\n"
+            f"Current: {latest.mode if latest else get_settings().default_risk_profile}\n\n"
+            "Use /model low risk, /model balanced, or /model aggressive.",
+        )
+        return
+    mode, custom_notes = _parse_risk_mode(context.args)
+    if mode is None or mode == "Custom":
+        await _reply(update, "Use: /model low risk, /model balanced, or /model aggressive.")
+        return
+    pref = users.set_risk(user.id, mode, custom_notes)
+    await _reply(update, f"Recommendation model switched to {pref.mode}.")
 
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -410,6 +474,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("holdings", holdings_command))
     app.add_handler(CommandHandler("performance", performance_command))
     app.add_handler(CommandHandler("risk", risk_command))
+    app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("health", health_command))
     app.add_handler(CommandHandler("suggest", suggest_command))
     app.add_handler(CommandHandler("why", why_command))
