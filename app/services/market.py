@@ -21,11 +21,11 @@ class MarketDataService:
     async def quote(self, symbol: str) -> dict:
         yahoo_symbol = self.yahoo_symbol(symbol)
         try:
-            price, previous_close, source = await self._quote_from_yahoo_chart(yahoo_symbol)
+            price, previous_close, source, volume = await self._quote_from_yahoo_chart(yahoo_symbol)
         except Exception:
             try:
-                price, previous_close, source = await self._to_thread(
-                    lambda: (*self._quote_from_history(yahoo_symbol), "yfinance")
+                price, previous_close, source, volume = await self._to_thread(
+                    lambda: (*self._quote_from_history(yahoo_symbol), "yfinance", None)
                 )
             except Exception as exc:
                 raise ExternalServiceError("yfinance", f"quote unavailable for {symbol}: {exc}") from exc
@@ -40,6 +40,7 @@ class MarketDataService:
                 "change_percent": ((price - previous_close) / previous_close * 100)
                 if previous_close
                 else None,
+                "volume": volume,
                 "source": source,
             }
         except Exception as exc:
@@ -63,7 +64,7 @@ class MarketDataService:
         previous_close = float(close.iloc[-2]) if len(close) > 1 else 0.0
         return price, previous_close
 
-    async def _quote_from_yahoo_chart(self, yahoo_symbol: str) -> tuple[float, float, str]:
+    async def _quote_from_yahoo_chart(self, yahoo_symbol: str) -> tuple[float, float, str, int | None]:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
         params = {"range": "5d", "interval": "1d"}
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -78,6 +79,7 @@ class MarketDataService:
         meta = item.get("meta", {})
         price = meta.get("regularMarketPrice")
         previous_close = meta.get("chartPreviousClose") or meta.get("previousClose") or 0.0
+        volume = meta.get("regularMarketVolume")
         if not price:
             quote = item.get("indicators", {}).get("quote", [{}])[0]
             closes = [value for value in quote.get("close", []) if value is not None]
@@ -85,7 +87,9 @@ class MarketDataService:
                 raise ValueError("missing chart close prices")
             price = closes[-1]
             previous_close = closes[-2] if len(closes) > 1 else previous_close
-        return float(price), float(previous_close or 0.0), "yfinance-yahoo-chart"
+            volumes = [value for value in quote.get("volume", []) if value is not None]
+            volume = volumes[-1] if volumes else volume
+        return float(price), float(previous_close or 0.0), "yfinance-yahoo-chart", int(volume) if volume else None
 
     async def sector(self, symbol: str) -> str | None:
         ticker = yf.Ticker(self.yahoo_symbol(symbol))

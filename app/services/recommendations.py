@@ -14,6 +14,7 @@ from app.services.market import MarketDataService
 class AllocationInstrument:
     symbol: str
     name: str
+    issuer: str
     category: str
     reason: str
 
@@ -25,6 +26,9 @@ class AllocationLeg:
     target_amount: float
     price: float
     quantity: int
+    volume: int | None
+    score: float
+    scanned_count: int
 
     @property
     def deployed_amount(self) -> float:
@@ -55,9 +59,7 @@ class RecommendationService:
 
         plan_text, plan_context = await self._model_allocation(portfolio, risk_profile, budget_inr)
         ai_note = await self._short_ai_note(portfolio, risk_profile, news, news_status, plan_context)
-        text = plan_text
-        if ai_note:
-            text = f"{text}\n\n🧠 AI Note\n{ai_note}"
+        text = f"{plan_text}\n\n🧠 AI Note\n{ai_note}" if ai_note else plan_text
         if persist:
             self.repository.save_recommendation(
                 Recommendation(
@@ -84,15 +86,31 @@ class RecommendationService:
         targets = self._targets_for_risk(risk_profile)
         legs: list[AllocationLeg] = []
         warnings: list[str] = []
-        for instrument, target_percent in targets:
+        scanned_universe: list[str] = []
+        used_issuers: set[str] = set()
+
+        for label, candidates, target_percent in targets:
             target_amount = budget_inr * target_percent / 100
-            try:
-                quote = await self.market.quote(instrument.symbol)
-                price = float(quote["price"])
-            except ExternalServiceError as exc:
-                warnings.append(str(exc))
+            evaluated: list[tuple[float, AllocationInstrument, float, int | None, int]] = []
+            for instrument in candidates:
+                scanned_universe.append(instrument.symbol)
+                try:
+                    quote = await self.market.quote(instrument.symbol)
+                    price = float(quote["price"])
+                    volume = quote.get("volume")
+                    quantity = max(floor(target_amount / price), 0)
+                    fit_score = self._budget_fit_score(target_amount, price, quantity)
+                    liquidity_score = min(float(volume or 0) / 500_000, 1)
+                    issuer_penalty = 0.08 if instrument.issuer in used_issuers else 0
+                    score = (fit_score * 0.65) + (liquidity_score * 0.35) - issuer_penalty
+                    evaluated.append((score, instrument, price, int(volume) if volume else None, quantity))
+                except ExternalServiceError as exc:
+                    warnings.append(f"{instrument.symbol}: {exc.message}")
+            if not evaluated:
+                warnings.append(f"{label}: no live prices available")
                 continue
-            quantity = max(floor(target_amount / price), 0)
+            score, instrument, price, volume, quantity = max(evaluated, key=lambda item: item[0])
+            used_issuers.add(instrument.issuer)
             legs.append(
                 AllocationLeg(
                     instrument=instrument,
@@ -100,42 +118,30 @@ class RecommendationService:
                     target_amount=target_amount,
                     price=price,
                     quantity=quantity,
+                    volume=volume,
+                    score=score,
+                    scanned_count=len(candidates),
                 )
             )
 
-        deployed = sum(leg.deployed_amount for leg in legs)
-        cash_left = max(float(budget_inr) - deployed, 0.0)
         if not legs:
             raise ExternalServiceError("Recommendation", "market prices unavailable for model basket")
 
-        portfolio_state = (
-            "empty portfolio"
-            if not portfolio.holdings
-            else f"{len(portfolio.holdings)} current holding(s)"
-        )
+        deployed = sum(leg.deployed_amount for leg in legs)
+        cash_left = max(float(budget_inr) - deployed, 0.0)
+        portfolio_state = "empty portfolio" if not portfolio.holdings else f"{len(portfolio.holdings)} current holding(s)"
         lines = [
             "🎯 This Month's Plan",
             "━━━━━━━━━━━━━━━━━━━━",
             f"Budget: Rs. {budget_inr:,.0f}",
             f"Risk: {risk_profile}",
             f"Portfolio: {portfolio_state}",
+            f"Universe scanned: {len(set(scanned_universe))} NSE ETF/commodity symbols",
             "",
             "🧺 Buy List",
         ]
         for leg in legs:
-            if leg.quantity <= 0:
-                lines.append(
-                    f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
-                    f"  Qty: 0 | Price: Rs. {leg.price:,.2f}\n"
-                    f"  Reason: target slice too small for 1 unit"
-                )
-            else:
-                lines.append(
-                    f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
-                    f"  Qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
-                    f"  Price: Rs. {leg.price:,.2f} | Target: {leg.target_percent}%\n"
-                    f"  Why: {leg.instrument.reason}"
-                )
+            lines.append(self._format_leg(leg))
         lines.extend(
             [
                 "",
@@ -143,26 +149,32 @@ class RecommendationService:
                 f"🪙 Cash left: Rs. {cash_left:,.0f}",
                 "",
                 "⚠️ Notes",
-                "• Quantities use latest yfinance prices and may differ at order time.",
+                "• Quantities use latest Yahoo/yfinance prices and may differ at order time.",
+                "• The selector avoids single-stock and single-sector concentration for this budget.",
                 "• This is an educational model allocation, not SEBI-registered advice.",
-                "• Review liquidity, taxes, brokerage, and your own suitability before placing orders.",
+                "• Review liquidity, taxes, brokerage, and suitability before placing orders.",
             ]
         )
         if warnings:
             lines.extend(["", "⚠️ Data Gaps", *[f"• {warning}" for warning in warnings[:3]]])
+
         context = {
             "budget_inr": budget_inr,
             "risk_profile": risk_profile,
             "deployed_amount": round(deployed, 2),
             "cash_left": round(cash_left, 2),
+            "universe_symbols": sorted(set(scanned_universe)),
             "legs": [
                 {
                     "symbol": leg.instrument.symbol,
                     "name": leg.instrument.name,
+                    "issuer": leg.instrument.issuer,
                     "category": leg.instrument.category,
                     "target_percent": leg.target_percent,
                     "price": round(leg.price, 2),
                     "quantity": leg.quantity,
+                    "volume": leg.volume,
+                    "score": round(leg.score, 4),
                     "deployed_amount": round(leg.deployed_amount, 2),
                 }
                 for leg in legs
@@ -170,6 +182,28 @@ class RecommendationService:
             "warnings": warnings,
         }
         return "\n".join(lines), context
+
+    def _budget_fit_score(self, target_amount: float, price: float, quantity: int) -> float:
+        if quantity <= 0:
+            return 0
+        deployed = quantity * price
+        return 1 - max(target_amount - deployed, 0) / max(target_amount, 1)
+
+    def _format_leg(self, leg: AllocationLeg) -> str:
+        if leg.quantity <= 0:
+            return (
+                f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
+                f"  Qty: 0 | Price: Rs. {leg.price:,.2f}\n"
+                "  Reason: target slice too small for 1 unit"
+            )
+        volume_text = f" | Vol: {leg.volume:,}" if leg.volume else ""
+        return (
+            f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
+            f"  Qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
+            f"  Price: Rs. {leg.price:,.2f} | Target: {leg.target_percent}%{volume_text}\n"
+            f"  Why: {leg.instrument.reason}\n"
+            f"  Picked from {leg.scanned_count} options"
+        )
 
     async def _short_ai_note(
         self,
@@ -195,57 +229,40 @@ class RecommendationService:
         except Exception:
             return None
 
-    def _targets_for_risk(self, risk_profile: str) -> list[tuple[AllocationInstrument, int]]:
-        equity_core = AllocationInstrument(
-            "NIFTYBEES",
-            "Nippon India ETF Nifty 50 BeES",
-            "Large-cap equity ETF",
-            "broad Nifty 50 exposure",
-        )
-        equity_growth = AllocationInstrument(
-            "JUNIORBEES",
-            "Nippon India ETF Junior BeES",
-            "Next 50 equity ETF",
-            "adds growth beyond large caps",
-        )
-        gold = AllocationInstrument(
-            "GOLDBEES",
-            "Nippon India ETF Gold BeES",
-            "Gold commodity ETF",
-            "diversifier against equity and currency risk",
-        )
-        cash = AllocationInstrument(
-            "LIQUIDBEES",
-            "Nippon India ETF Liquid BeES",
-            "Liquid debt ETF",
-            "keeps part of the budget stable and liquid",
-        )
+    def _targets_for_risk(
+        self,
+        risk_profile: str,
+    ) -> list[tuple[str, list[AllocationInstrument], int]]:
+        equity_core = [
+            AllocationInstrument("NIFTYBEES", "Nifty 50 ETF", "Nippon", "Large-cap equity ETF", "broad Nifty 50 exposure"),
+            AllocationInstrument("HDFCNIFTY", "HDFC Nifty 50 ETF", "HDFC", "Large-cap equity ETF", "broad Nifty 50 exposure"),
+            AllocationInstrument("ICICINIFTY", "ICICI Nifty 50 ETF", "ICICI", "Large-cap equity ETF", "broad Nifty 50 exposure"),
+            AllocationInstrument("SETFNIF50", "SBI Nifty 50 ETF", "SBI", "Large-cap equity ETF", "broad Nifty 50 exposure"),
+            AllocationInstrument("UTINIFTETF", "UTI Nifty 50 ETF", "UTI", "Large-cap equity ETF", "broad Nifty 50 exposure"),
+        ]
+        equity_growth = [
+            AllocationInstrument("JUNIORBEES", "Nifty Next 50 ETF", "Nippon", "Next 50 equity ETF", "adds growth beyond large caps"),
+            AllocationInstrument("HDFCNEXT50", "HDFC Nifty Next 50 ETF", "HDFC", "Next 50 equity ETF", "adds growth beyond large caps"),
+            AllocationInstrument("ICICINXT50", "ICICI Nifty Next 50 ETF", "ICICI", "Next 50 equity ETF", "adds growth beyond large caps"),
+        ]
+        gold = [
+            AllocationInstrument("GOLDBEES", "Gold ETF", "Nippon", "Gold commodity ETF", "diversifier against equity/currency risk"),
+            AllocationInstrument("HDFCGOLD", "HDFC Gold ETF", "HDFC", "Gold commodity ETF", "diversifier against equity/currency risk"),
+            AllocationInstrument("GOLDIETF", "ICICI Gold ETF", "ICICI", "Gold commodity ETF", "diversifier against equity/currency risk"),
+            AllocationInstrument("AXISGOLD", "Axis Gold ETF", "Axis", "Gold commodity ETF", "diversifier against equity/currency risk"),
+            AllocationInstrument("SETFGOLD", "SBI Gold ETF", "SBI", "Gold commodity ETF", "diversifier against equity/currency risk"),
+        ]
+        liquid = [
+            AllocationInstrument("LIQUIDBEES", "Liquid ETF", "Nippon", "Liquid debt ETF", "keeps budget stable and liquid"),
+            AllocationInstrument("LIQUIDIETF", "ICICI Liquid ETF", "ICICI", "Liquid debt ETF", "keeps budget stable and liquid"),
+            AllocationInstrument("LIQUIDCASE", "Liquid ETF", "Zerodha", "Liquid debt ETF", "keeps budget stable and liquid"),
+        ]
         mode = risk_profile.strip().title()
         if mode == "Conservative":
-            return [(cash, 40), (equity_core, 35), (gold, 25)]
+            return [("Stability", liquid, 40), ("Core equity", equity_core, 35), ("Gold", gold, 25)]
         if mode == "Aggressive":
-            return [(equity_core, 60), (equity_growth, 25), (gold, 15)]
-        return [(equity_core, 55), (gold, 25), (cash, 20)]
-
-    def _prompt(
-        self,
-        portfolio: PortfolioView,
-        risk_profile: str,
-        budget_inr: int,
-        news: list[dict],
-        news_status: str,
-    ) -> str:
-        return (
-            "You are a cautious Indian-market portfolio analyst. Use only the provided data. "
-            "Do not invent prices, sectors, news, broker data, or guarantees. If data is missing, say so. "
-            "Provide a Telegram-friendly recommendation with sections, concise reasoning, and explicit risks. "
-            "This is not SEBI-registered investment advice; frame as educational analysis.\n\n"
-            f"Risk profile: {risk_profile}\n"
-            f"Monthly budget INR: {budget_inr}\n"
-            f"News status: {news_status}\n"
-            f"Portfolio JSON:\n{json.dumps(self._portfolio_context(portfolio), ensure_ascii=False)}\n"
-            f"News JSON:\n{json.dumps(news[:5], ensure_ascii=False)}"
-        )
+            return [("Core equity", equity_core, 60), ("Growth equity", equity_growth, 25), ("Gold", gold, 15)]
+        return [("Core equity", equity_core, 55), ("Gold", gold, 25), ("Stability", liquid, 20)]
 
     def _portfolio_context(self, portfolio: PortfolioView) -> dict:
         return {
