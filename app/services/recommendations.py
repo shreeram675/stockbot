@@ -35,6 +35,16 @@ class AllocationLeg:
         return self.price * self.quantity
 
 
+@dataclass(frozen=True)
+class RebalanceAction:
+    action: str
+    symbol: str
+    name: str
+    quantity: int | None
+    amount: float
+    reason: str
+
+
 class RecommendationService:
     def __init__(self, repository: PortfolioRepository):
         self.repository = repository
@@ -128,32 +138,40 @@ class RecommendationService:
             raise ExternalServiceError("Recommendation", "market prices unavailable for model basket")
 
         legs = self._use_remaining_cash_for_zero_quantity_legs(legs, budget_inr)
-        deployed = sum(leg.deployed_amount for leg in legs)
-        cash_left = max(float(budget_inr) - deployed, 0.0)
+        actions, cash_used, cash_left = self._rebalance_actions(portfolio, legs, budget_inr)
         portfolio_state = "empty portfolio" if not portfolio.holdings else f"{len(portfolio.holdings)} current holding(s)"
+        total_after_budget = portfolio.portfolio_value + budget_inr
         lines = [
-            "🎯 Monthly Investment Plan",
+            "🎯 Monthly Rebalance Plan",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"Budget: Rs. {budget_inr:,.0f}",
+            f"New monthly cash: Rs. {budget_inr:,.0f}",
+            f"Portfolio value: Rs. {portfolio.portfolio_value:,.0f}",
+            f"Review base: Rs. {total_after_budget:,.0f}",
             f"Risk: {risk_profile}",
-            "Style: long-term monthly investing, not trading",
+            "Style: monthly investing + portfolio rebalance, not intraday trading",
             f"Portfolio: {portfolio_state}",
             f"Universe scanned: {len(set(scanned_universe))} NSE ETF/equity/commodity candidates",
             "",
-            "🧺 Long-Term Allocation",
+            "🎚 Target Mix",
         ]
         for leg in legs:
             lines.append(self._format_leg(leg))
+        lines.extend(["", "🧺 This Month's Actions"])
+        if actions:
+            lines.extend(self._format_action(action) for action in actions)
+        else:
+            lines.append("• No buy/sell actions from available data. Keep cash until prices/portfolio data are available.")
         lines.extend(
             [
                 "",
-                f"💰 Used: Rs. {deployed:,.0f}",
+                f"💰 New cash used: Rs. {cash_used:,.0f}",
                 f"🪙 Cash left: Rs. {cash_left:,.0f}",
                 "",
                 "⚠️ Notes",
                 "• Quantities use latest Yahoo/yfinance prices and may differ at order time.",
-                "• This is a monthly buy-and-hold allocation, not an intraday/short-term trading signal.",
-                "• Diversification is spread across multiple equity sleeves plus gold/stability.",
+                "• Sell/trim/swap rows are review actions based on allocation drift, not automatic orders.",
+                "• Check taxes, brokerage, liquidity, and your conviction before selling anything.",
+                "• Diversification is spread across multiple equity sleeves plus gold/stability where data is available.",
                 "• This is an educational model allocation, not SEBI-registered advice.",
                 "• Review liquidity, taxes, brokerage, and suitability before placing orders.",
             ]
@@ -164,7 +182,9 @@ class RecommendationService:
         context = {
             "budget_inr": budget_inr,
             "risk_profile": risk_profile,
-            "deployed_amount": round(deployed, 2),
+            "portfolio_value": round(portfolio.portfolio_value, 2),
+            "review_base": round(total_after_budget, 2),
+            "cash_used": round(cash_used, 2),
             "cash_left": round(cash_left, 2),
             "universe_symbols": sorted(set(scanned_universe)),
             "legs": [
@@ -178,10 +198,11 @@ class RecommendationService:
                     "quantity": leg.quantity,
                     "volume": leg.volume,
                     "score": round(leg.score, 4),
-                    "deployed_amount": round(leg.deployed_amount, 2),
+                    "monthly_amount": round(leg.deployed_amount, 2),
                 }
                 for leg in legs
             ],
+            "actions": [action.__dict__ for action in actions],
             "warnings": warnings,
         }
         return "\n".join(lines), context
@@ -210,17 +231,112 @@ class RecommendationService:
         if leg.quantity <= 0:
             return (
                 f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
-                f"  Qty: 0 | Price: Rs. {leg.price:,.2f}\n"
+                f"  Monthly qty: 0 | Price: Rs. {leg.price:,.2f}\n"
                 "  Reason: target allocation too small for 1 unit"
             )
         volume_text = f" | Vol: {leg.volume:,}" if leg.volume else ""
         return (
             f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
-            f"  Suggested monthly qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
+            f"  Monthly model qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
             f"  Price: Rs. {leg.price:,.2f} | Target: {leg.target_percent}%{volume_text}\n"
             f"  Why: {leg.instrument.reason}\n"
             f"  Picked from {leg.scanned_count} options"
         )
+
+    def _rebalance_actions(
+        self,
+        portfolio: PortfolioView,
+        legs: list[AllocationLeg],
+        budget_inr: int,
+    ) -> tuple[list[RebalanceAction], float, float]:
+        total_after_budget = portfolio.portfolio_value + budget_inr
+        holding_values = {
+            self._normalize_symbol(holding.symbol): holding.market_value
+            for holding in portfolio.holdings
+        }
+        holding_quantities = {
+            self._normalize_symbol(holding.symbol): holding.quantity
+            for holding in portfolio.holdings
+        }
+        target_symbols = {self._normalize_symbol(leg.instrument.symbol) for leg in legs}
+        actions: list[RebalanceAction] = []
+        available_cash = float(budget_inr)
+
+        for leg in legs:
+            symbol = self._normalize_symbol(leg.instrument.symbol)
+            target_value = total_after_budget * leg.target_percent / 100
+            current_value = holding_values.get(symbol, 0.0)
+            difference = target_value - current_value
+            tolerance = max(target_value * 0.10, leg.price)
+            if difference > tolerance and available_cash >= leg.price:
+                buy_amount = min(difference, available_cash)
+                quantity = floor(buy_amount / leg.price)
+                if quantity > 0:
+                    amount = quantity * leg.price
+                    available_cash -= amount
+                    actions.append(
+                        RebalanceAction(
+                            action="BUY",
+                            symbol=leg.instrument.symbol,
+                            name=leg.instrument.name,
+                            quantity=quantity,
+                            amount=amount,
+                            reason=f"below {leg.target_percent}% target by approx Rs. {difference:,.0f}",
+                        )
+                    )
+            elif difference < -tolerance:
+                excess = abs(difference)
+                quantity = min(floor(excess / leg.price), floor(holding_quantities.get(symbol, 0.0)))
+                actions.append(
+                    RebalanceAction(
+                        action="REVIEW TRIM",
+                        symbol=leg.instrument.symbol,
+                        name=leg.instrument.name,
+                        quantity=quantity if quantity > 0 else None,
+                        amount=excess,
+                        reason=f"above {leg.target_percent}% target by approx Rs. {excess:,.0f}",
+                    )
+                )
+            elif current_value > 0:
+                actions.append(
+                    RebalanceAction(
+                        action="HOLD",
+                        symbol=leg.instrument.symbol,
+                        name=leg.instrument.name,
+                        quantity=None,
+                        amount=current_value,
+                        reason=f"near {leg.target_percent}% target band",
+                    )
+                )
+
+        for holding in sorted(portfolio.holdings, key=lambda item: item.market_value, reverse=True):
+            symbol = self._normalize_symbol(holding.symbol)
+            if symbol in target_symbols or holding.market_value <= 0:
+                continue
+            actions.append(
+                RebalanceAction(
+                    action="REVIEW SWAP",
+                    symbol=holding.symbol,
+                    name=holding.symbol,
+                    quantity=floor(holding.quantity) if holding.quantity > 0 else None,
+                    amount=holding.market_value,
+                    reason="not part of this month's selected diversified model basket",
+                )
+            )
+
+        cash_used = float(budget_inr) - available_cash
+        return actions, cash_used, max(available_cash, 0.0)
+
+    def _format_action(self, action: RebalanceAction) -> str:
+        quantity = f" | Qty: {action.quantity}" if action.quantity else ""
+        return (
+            f"• {action.action}: {action.name} ({action.symbol}){quantity}\n"
+            f"  Approx: Rs. {action.amount:,.0f}\n"
+            f"  Why: {action.reason}"
+        )
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        return symbol.strip().upper().removesuffix(".NS").removesuffix(".BO")
 
     async def _short_ai_note(
         self,
@@ -236,8 +352,8 @@ class RecommendationService:
             return await self.ai.generate(
                 "Write only 2 short Telegram bullets. No markdown headings. "
                 "Use only the provided data. Do not add new instruments, prices, or quantities. "
-                "Mention one risk and one reason the long-term monthly allocation is sensible. "
-                "Do not describe this as trading.\n"
+                "Mention one risk and one reason the monthly rebalance is sensible. "
+                "Do not describe this as intraday trading or a guaranteed recommendation.\n"
                 f"Risk profile: {risk_profile}\n"
                 f"Portfolio: {json.dumps(self._portfolio_context(portfolio), ensure_ascii=False)}\n"
                 f"Plan: {json.dumps(plan_context, ensure_ascii=False)}\n"

@@ -124,8 +124,7 @@ def format_monthly_workflow(risk_profile: str, budget: int, recommendation: str)
             f"Risk profile: {risk_profile}",
             f"Budget: Rs. {budget:,}",
             "",
-            "🧠 Recommendation",
+            "🧠 Rebalance Plan",
             recommendation,
         ]
     )
-

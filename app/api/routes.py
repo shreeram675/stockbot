@@ -147,7 +147,7 @@ async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
                 bot,
                 settings.telegram_allowed_user_id,
                 (
-                    "💡 Today's Investing Allocation\n"
+                    "💡 Today's Rebalance Plan\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"{recommendation}"
                 ),
@@ -156,7 +156,7 @@ async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
             await _send_telegram_text(
                 bot,
                 settings.telegram_allowed_user_id,
-                f"⚠️ Investing allocation unavailable today.\n\n{exc}",
+                f"⚠️ Rebalance plan unavailable today.\n\n{exc}",
             )
     except Exception as exc:
         await _send_telegram_text(

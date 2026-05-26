@@ -46,7 +46,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("performance", "Daily, weekly, monthly trends"),
     ("risk", "Show or set risk profile"),
     ("health", "Portfolio health score"),
-    ("suggest", "Monthly investing allocation"),
+    ("suggest", "Monthly rebalance plan"),
     ("why", "Explain latest recommendation"),
     ("ask", "Ask a portfolio question"),
     ("simulate", "Projection with assumptions"),
@@ -341,7 +341,7 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             get_settings().monthly_investment_budget_inr,
             persist=True,
         )
-        await _reply(update, f"💡 Monthly Investing Allocation\n━━━━━━━━━━━━━━━━━━━━\n{text}")
+        await _reply(update, f"💡 Monthly Rebalance Plan\n━━━━━━━━━━━━━━━━━━━━\n{text}")
     except MissingConfigurationError as exc:
         await _reply(
             update,

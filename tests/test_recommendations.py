@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.portfolio import PortfolioView
+from app.schemas.portfolio import HoldingView, PortfolioView
 from app.services.recommendations import RecommendationService
 
 
@@ -42,7 +42,7 @@ class FakeMarket:
 
 
 @pytest.mark.asyncio
-async def test_suggestion_is_presented_as_long_term_investing_not_trading() -> None:
+async def test_suggestion_is_presented_as_monthly_rebalance_not_intraday_trading() -> None:
     service = RecommendationService(FakeRepository())
     service.market = FakeMarket()
     service.ai = SimpleNamespace(available=lambda: False)
@@ -58,11 +58,37 @@ async def test_suggestion_is_presented_as_long_term_investing_not_trading() -> N
 
     text = await service.suggest("user-1", portfolio, "Balanced", 5000, persist=False)
 
-    assert "Monthly Investment Plan" in text
-    assert "Long-Term Allocation" in text
-    assert "not trading" in text
-    assert "Suggested monthly qty" in text
+    assert "Monthly Rebalance Plan" in text
+    assert "This Month's Actions" in text
+    assert "not intraday trading" in text
+    assert "BUY:" in text
+    assert "Monthly model qty" in text
     assert "Qty: 0" not in text
     assert "Buy List" not in text
     assert "This Month's Plan" not in text
     assert "Universe scanned: 20" in text
+
+
+@pytest.mark.asyncio
+async def test_rebalance_plan_compares_existing_holdings_for_trim_and_swap_reviews() -> None:
+    service = RecommendationService(FakeRepository())
+    service.market = FakeMarket()
+    service.ai = SimpleNamespace(available=lambda: False)
+    portfolio = PortfolioView(
+        portfolio_value=8000,
+        invested_amount=7000,
+        pnl=1000,
+        daily_pnl=None,
+        allocation={"SETFNIF50": 75, "INFY": 25},
+        holdings=[
+            HoldingView("SETFNIF50", 24, 200, 250, 6000, 1200),
+            HoldingView("INFY", 1, 1500, 2000, 2000, 500),
+        ],
+        statuses=[],
+    )
+
+    text = await service.suggest("user-1", portfolio, "Balanced", 5000, persist=False)
+
+    assert "REVIEW TRIM: SBI Nifty 50 ETF (SETFNIF50)" in text
+    assert "REVIEW SWAP: INFY (INFY)" in text
+    assert "Sell/trim/swap rows are review actions" in text

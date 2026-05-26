@@ -78,7 +78,7 @@ Local API:
 - `/risk`
 - `/risk Balanced`
 - `/health`
-- `/suggest`
+- `/suggest` monthly rebalance plan
 - `/why`
 - `/ask What is my biggest concentration risk?`
 - `/simulate 5000 10y`
