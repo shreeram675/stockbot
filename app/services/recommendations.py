@@ -57,6 +57,7 @@ class RecommendationService:
         portfolio: PortfolioView,
         risk_profile: str,
         budget_inr: int,
+        include_new_cash: bool = False,
         persist: bool = True,
     ) -> str:
         news: list[dict] = []
@@ -67,7 +68,12 @@ class RecommendationService:
         except (MissingConfigurationError, ExternalServiceError) as exc:
             news_status = str(exc)
 
-        plan_text, plan_context = await self._model_allocation(portfolio, risk_profile, budget_inr)
+        plan_text, plan_context = await self._model_allocation(
+            portfolio,
+            risk_profile,
+            budget_inr,
+            include_new_cash,
+        )
         ai_note = await self._short_ai_note(portfolio, risk_profile, news, news_status, plan_context)
         text = f"{plan_text}\n\n🧠 AI Note\n{ai_note}" if ai_note else plan_text
         if persist:
@@ -78,6 +84,7 @@ class RecommendationService:
                     recommendation=text,
                     context={
                         "budget_inr": budget_inr,
+                        "include_new_cash": include_new_cash,
                         "portfolio": self._portfolio_context(portfolio),
                         "news_status": news_status,
                         "news": news[:5],
@@ -92,15 +99,17 @@ class RecommendationService:
         portfolio: PortfolioView,
         risk_profile: str,
         budget_inr: int,
+        include_new_cash: bool,
     ) -> tuple[str, dict]:
         targets = self._targets_for_risk(risk_profile)
         legs: list[AllocationLeg] = []
         warnings: list[str] = []
         scanned_universe: list[str] = []
         used_issuers: set[str] = set()
+        held_symbols = {self._normalize_symbol(holding.symbol) for holding in portfolio.holdings}
 
         for label, candidates, target_percent in targets:
-            target_amount = budget_inr * target_percent / 100
+            target_amount = budget_inr * target_percent / 100 if include_new_cash else 0.0
             evaluated: list[tuple[float, AllocationInstrument, float, int | None, int]] = []
             for instrument in candidates:
                 scanned_universe.append(instrument.symbol)
@@ -112,7 +121,15 @@ class RecommendationService:
                     fit_score = self._budget_fit_score(target_amount, price, quantity)
                     liquidity_score = min(float(volume or 0) / 500_000, 1)
                     issuer_penalty = 0.08 if instrument.issuer in used_issuers else 0
-                    score = (fit_score * 0.65) + (liquidity_score * 0.35) - issuer_penalty
+                    existing_holding_bonus = (
+                        0.5 if self._normalize_symbol(instrument.symbol) in held_symbols else 0
+                    )
+                    score = (
+                        (fit_score * 0.65)
+                        + (liquidity_score * 0.35)
+                        + existing_holding_bonus
+                        - issuer_penalty
+                    )
                     evaluated.append((score, instrument, price, int(volume) if volume else None, quantity))
                 except ExternalServiceError as exc:
                     warnings.append(f"{instrument.symbol}: {exc.message}")
@@ -137,25 +154,41 @@ class RecommendationService:
         if not legs:
             raise ExternalServiceError("Recommendation", "market prices unavailable for model basket")
 
-        legs = self._use_remaining_cash_for_zero_quantity_legs(legs, budget_inr)
-        actions, cash_used, cash_left = self._rebalance_actions(portfolio, legs, budget_inr)
+        if include_new_cash:
+            legs = self._use_remaining_cash_for_zero_quantity_legs(legs, budget_inr)
+        actions, cash_used, cash_left = self._rebalance_actions(
+            portfolio,
+            legs,
+            budget_inr if include_new_cash else 0,
+        )
         portfolio_state = "empty portfolio" if not portfolio.holdings else f"{len(portfolio.holdings)} current holding(s)"
-        total_after_budget = portfolio.portfolio_value + budget_inr
+        total_after_budget = portfolio.portfolio_value + (budget_inr if include_new_cash else 0)
+        title = "🎯 Monthly New-Cash Rebalance Plan" if include_new_cash else "🎯 Holdings Rebalance Review"
+        scope = (
+            f"New monthly cash: Rs. {budget_inr:,.0f}"
+            if include_new_cash
+            else "New cash: Rs. 0 - reviewing current holdings only"
+        )
+        style = (
+            "Style: scheduled monthly investing + portfolio rebalance"
+            if include_new_cash
+            else "Style: in-between-month holdings review, no new investment assumed"
+        )
         lines = [
-            "🎯 Monthly Rebalance Plan",
+            title,
             "━━━━━━━━━━━━━━━━━━━━",
-            f"New monthly cash: Rs. {budget_inr:,.0f}",
+            scope,
             f"Portfolio value: Rs. {portfolio.portfolio_value:,.0f}",
             f"Review base: Rs. {total_after_budget:,.0f}",
             f"Risk: {risk_profile}",
-            "Style: monthly investing + portfolio rebalance, not intraday trading",
+            style,
             f"Portfolio: {portfolio_state}",
             f"Universe scanned: {len(set(scanned_universe))} NSE ETF/equity/commodity candidates",
             "",
             "🎚 Target Mix",
         ]
         for leg in legs:
-            lines.append(self._format_leg(leg))
+            lines.append(self._format_leg(leg, include_new_cash))
         lines.extend(["", "🧺 This Month's Actions"])
         if actions:
             lines.extend(self._format_action(action) for action in actions)
@@ -181,6 +214,7 @@ class RecommendationService:
 
         context = {
             "budget_inr": budget_inr,
+            "include_new_cash": include_new_cash,
             "risk_profile": risk_profile,
             "portfolio_value": round(portfolio.portfolio_value, 2),
             "review_base": round(total_after_budget, 2),
@@ -227,7 +261,15 @@ class RecommendationService:
             adjusted.append(leg)
         return adjusted
 
-    def _format_leg(self, leg: AllocationLeg) -> str:
+    def _format_leg(self, leg: AllocationLeg, include_new_cash: bool) -> str:
+        if not include_new_cash:
+            volume_text = f" | Vol: {leg.volume:,}" if leg.volume else ""
+            return (
+                f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
+                f"  Price: Rs. {leg.price:,.2f} | Target: {leg.target_percent}%{volume_text}\n"
+                f"  Why: {leg.instrument.reason}\n"
+                f"  Picked from {leg.scanned_count} options"
+            )
         if leg.quantity <= 0:
             return (
                 f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
@@ -268,20 +310,32 @@ class RecommendationService:
             current_value = holding_values.get(symbol, 0.0)
             difference = target_value - current_value
             tolerance = max(target_value * 0.10, leg.price)
-            if difference > tolerance and available_cash >= leg.price:
-                buy_amount = min(difference, available_cash)
-                quantity = floor(buy_amount / leg.price)
-                if quantity > 0:
-                    amount = quantity * leg.price
-                    available_cash -= amount
+            if difference > tolerance:
+                if available_cash >= leg.price:
+                    buy_amount = min(difference, available_cash)
+                    quantity = floor(buy_amount / leg.price)
+                    if quantity > 0:
+                        amount = quantity * leg.price
+                        available_cash -= amount
+                        actions.append(
+                            RebalanceAction(
+                                action="BUY",
+                                symbol=leg.instrument.symbol,
+                                name=leg.instrument.name,
+                                quantity=quantity,
+                                amount=amount,
+                                reason=f"below {leg.target_percent}% target by approx Rs. {difference:,.0f}",
+                            )
+                        )
+                else:
                     actions.append(
                         RebalanceAction(
-                            action="BUY",
+                            action="UNDERWEIGHT",
                             symbol=leg.instrument.symbol,
                             name=leg.instrument.name,
-                            quantity=quantity,
-                            amount=amount,
-                            reason=f"below {leg.target_percent}% target by approx Rs. {difference:,.0f}",
+                            quantity=None,
+                            amount=difference,
+                            reason=f"below {leg.target_percent}% target; no new cash assumed in this review",
                         )
                     )
             elif difference < -tolerance:

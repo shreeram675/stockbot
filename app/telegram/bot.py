@@ -338,10 +338,11 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             user.id,
             view,
             risk.mode if risk else get_settings().default_risk_profile,
-            get_settings().monthly_investment_budget_inr,
+            0,
+            include_new_cash=False,
             persist=True,
         )
-        await _reply(update, f"💡 Monthly Rebalance Plan\n━━━━━━━━━━━━━━━━━━━━\n{text}")
+        await _reply(update, f"💡 Holdings Rebalance Review\n━━━━━━━━━━━━━━━━━━━━\n{text}")
     except MissingConfigurationError as exc:
         await _reply(
             update,
@@ -465,6 +466,7 @@ async def monthly_risk_callback(update: Update, context: ContextTypes.DEFAULT_TY
             view,
             mode,
             get_settings().monthly_investment_budget_inr,
+            include_new_cash=True,
             persist=True,
         )
         await _reply_to_message(

@@ -140,14 +140,15 @@ async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
                 user_id=user.id,
                 portfolio=view,
                 risk_profile=risk.mode if risk else settings.default_risk_profile,
-                budget_inr=settings.monthly_investment_budget_inr,
+                budget_inr=0,
+                include_new_cash=False,
                 persist=True,
             )
             await _send_telegram_text(
                 bot,
                 settings.telegram_allowed_user_id,
                 (
-                    "💡 Today's Rebalance Plan\n"
+                    "💡 Today's Holdings Review\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"{recommendation}"
                 ),
@@ -373,7 +374,7 @@ async def _send_report(kind: str, authorization: str | None) -> dict[str, str]:
             text=(
                 "🔐 Dhan Re-authentication\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"Authenticate for today's portfolio updates and suggestions:\n{auth_url}\n\n"
+                f"Authenticate for today's portfolio updates and holdings review:\n{auth_url}\n\n"
                 "If you skip this, today's Dhan-backed activity will be skipped. "
                 "No portfolio data will be refreshed without a valid token."
             ),

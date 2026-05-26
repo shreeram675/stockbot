@@ -42,7 +42,7 @@ class FakeMarket:
 
 
 @pytest.mark.asyncio
-async def test_suggestion_is_presented_as_monthly_rebalance_not_intraday_trading() -> None:
+async def test_monthly_workflow_includes_new_cash_buys() -> None:
     service = RecommendationService(FakeRepository())
     service.market = FakeMarket()
     service.ai = SimpleNamespace(available=lambda: False)
@@ -56,11 +56,18 @@ async def test_suggestion_is_presented_as_monthly_rebalance_not_intraday_trading
         statuses=[],
     )
 
-    text = await service.suggest("user-1", portfolio, "Balanced", 5000, persist=False)
+    text = await service.suggest(
+        "user-1",
+        portfolio,
+        "Balanced",
+        5000,
+        include_new_cash=True,
+        persist=False,
+    )
 
-    assert "Monthly Rebalance Plan" in text
+    assert "Monthly New-Cash Rebalance Plan" in text
+    assert "New monthly cash: Rs. 5,000" in text
     assert "This Month's Actions" in text
-    assert "not intraday trading" in text
     assert "BUY:" in text
     assert "Monthly model qty" in text
     assert "Qty: 0" not in text
@@ -70,7 +77,7 @@ async def test_suggestion_is_presented_as_monthly_rebalance_not_intraday_trading
 
 
 @pytest.mark.asyncio
-async def test_rebalance_plan_compares_existing_holdings_for_trim_and_swap_reviews() -> None:
+async def test_suggest_reviews_current_holdings_without_new_cash() -> None:
     service = RecommendationService(FakeRepository())
     service.market = FakeMarket()
     service.ai = SimpleNamespace(available=lambda: False)
@@ -87,8 +94,20 @@ async def test_rebalance_plan_compares_existing_holdings_for_trim_and_swap_revie
         statuses=[],
     )
 
-    text = await service.suggest("user-1", portfolio, "Balanced", 5000, persist=False)
+    text = await service.suggest(
+        "user-1",
+        portfolio,
+        "Balanced",
+        0,
+        include_new_cash=False,
+        persist=False,
+    )
 
+    assert "Holdings Rebalance Review" in text
+    assert "New cash: Rs. 0 - reviewing current holdings only" in text
+    assert "New monthly cash" not in text
+    assert "BUY:" not in text
+    assert "UNDERWEIGHT:" in text
     assert "REVIEW TRIM: SBI Nifty 50 ETF (SETFNIF50)" in text
     assert "REVIEW SWAP: INFY (INFY)" in text
     assert "Sell/trim/swap rows are review actions" in text

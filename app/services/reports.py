@@ -81,6 +81,7 @@ class ReportService:
             portfolio=portfolio,
             risk_profile=risk_profile,
             budget_inr=self.settings.monthly_investment_budget_inr,
+            include_new_cash=True,
             persist=True,
         )
         return format_monthly_workflow(risk_profile, self.settings.monthly_investment_budget_inr, recommendation)
@@ -101,4 +102,3 @@ class ReportService:
             },
         )
         return format_health(self.analytics.health(view))
-
