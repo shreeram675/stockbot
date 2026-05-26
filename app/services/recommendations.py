@@ -1,12 +1,13 @@
-import json
 from dataclasses import dataclass, replace
 from math import floor
 
+from app.core.config import get_settings
 from app.core.errors import ExternalServiceError, MissingConfigurationError
 from app.db.models import Recommendation
 from app.repositories.portfolio import PortfolioRepository
 from app.schemas.portfolio import PortfolioView
 from app.services.ai import AIService
+from app.services.llm_prompts import recommendation_note_prompt
 from app.services.market import MarketDataService
 
 
@@ -43,11 +44,14 @@ class RebalanceAction:
     quantity: int | None
     amount: float
     reason: str
+    estimated_cost: float = 0.0
+    estimated_benefit: float | None = None
 
 
 class RecommendationService:
     def __init__(self, repository: PortfolioRepository):
         self.repository = repository
+        self.settings = get_settings()
         self.ai = AIService()
         self.market = MarketDataService()
 
@@ -74,7 +78,9 @@ class RecommendationService:
             budget_inr,
             include_new_cash,
         )
-        ai_note = await self._short_ai_note(portfolio, risk_profile, news, news_status, plan_context)
+        ai_note = None
+        if plan_context.get("status") != "no_review_base":
+            ai_note = await self._short_ai_note(portfolio, risk_profile, news, news_status, plan_context)
         text = f"{plan_text}\n\n🧠 AI Note\n{ai_note}" if ai_note else plan_text
         if persist:
             self.repository.save_recommendation(
@@ -101,6 +107,46 @@ class RecommendationService:
         budget_inr: int,
         include_new_cash: bool,
     ) -> tuple[str, dict]:
+        if not include_new_cash and budget_inr <= 0 and portfolio.portfolio_value <= 0:
+            portfolio_state = (
+                "empty portfolio"
+                if not portfolio.holdings
+                else f"{len(portfolio.holdings)} current holding(s) with no market value"
+            )
+            lines = [
+                "🎯 Holdings Rebalance Review",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "New cash: Rs. 0 - reviewing current holdings only",
+                f"Portfolio value: Rs. {portfolio.portfolio_value:,.0f}",
+                "Review base: Rs. 0",
+                f"Risk: {risk_profile}",
+                "Style: in-between-month holdings review, no new investment assumed",
+                f"Portfolio: {portfolio_state}",
+                "",
+                "🧺 This Month's Actions",
+                "• No rebalance actions available because portfolio value is Rs. 0.",
+                "• Refresh holdings or add portfolio data before reviewing target allocations.",
+                "",
+                "⚠️ Notes",
+                "• No target mix is shown until there is a portfolio value or new cash budget to allocate.",
+                "• This is an educational model allocation, not SEBI-registered advice.",
+            ]
+            context = {
+                "status": "no_review_base",
+                "budget_inr": budget_inr,
+                "include_new_cash": include_new_cash,
+                "risk_profile": risk_profile,
+                "portfolio_value": round(portfolio.portfolio_value, 2),
+                "review_base": 0,
+                "cash_used": 0,
+                "cash_left": 0,
+                "universe_symbols": [],
+                "legs": [],
+                "actions": [],
+                "warnings": ["portfolio value is zero"],
+            }
+            return "\n".join(lines), context
+
         targets = self._targets_for_risk(risk_profile)
         legs: list[AllocationLeg] = []
         warnings: list[str] = []
@@ -203,6 +249,7 @@ class RecommendationService:
                 "⚠️ Notes",
                 "• Quantities use latest Yahoo/yfinance prices and may differ at order time.",
                 "• Sell/trim/swap rows are review actions based on allocation drift, not automatic orders.",
+                "• Sell/swap actions are skipped when estimated gain does not clear brokerage/transaction costs.",
                 "• Check taxes, brokerage, liquidity, and your conviction before selling anything.",
                 "• Diversification is spread across multiple equity sleeves plus gold/stability where data is available.",
                 "• This is an educational model allocation, not SEBI-registered advice.",
@@ -300,6 +347,10 @@ class RecommendationService:
             self._normalize_symbol(holding.symbol): holding.quantity
             for holding in portfolio.holdings
         }
+        holding_gains = {
+            self._normalize_symbol(holding.symbol): holding.gain_loss
+            for holding in portfolio.holdings
+        }
         target_symbols = {self._normalize_symbol(leg.instrument.symbol) for leg in legs}
         actions: list[RebalanceAction] = []
         available_cash = float(budget_inr)
@@ -341,6 +392,30 @@ class RecommendationService:
             elif difference < -tolerance:
                 excess = abs(difference)
                 quantity = min(floor(excess / leg.price), floor(holding_quantities.get(symbol, 0.0)))
+                sell_amount = quantity * leg.price if quantity > 0 else min(excess, current_value)
+                estimated_cost = self._estimated_transaction_cost(sell_amount, orders=1)
+                estimated_benefit = self._proportional_gain(
+                    holding_gains.get(symbol, 0.0),
+                    current_value,
+                    sell_amount,
+                )
+                if not self._clears_transaction_cost(estimated_benefit, estimated_cost):
+                    actions.append(
+                        RebalanceAction(
+                            action="HOLD",
+                            symbol=leg.instrument.symbol,
+                            name=leg.instrument.name,
+                            quantity=None,
+                            amount=current_value,
+                            reason=(
+                                "trim skipped: estimated gain does not clear brokerage/"
+                                "transaction costs with buffer"
+                            ),
+                            estimated_cost=estimated_cost,
+                            estimated_benefit=estimated_benefit,
+                        )
+                    )
+                    continue
                 actions.append(
                     RebalanceAction(
                         action="REVIEW TRIM",
@@ -348,7 +423,12 @@ class RecommendationService:
                         name=leg.instrument.name,
                         quantity=quantity if quantity > 0 else None,
                         amount=excess,
-                        reason=f"above {leg.target_percent}% target by approx Rs. {excess:,.0f}",
+                        reason=(
+                            f"above {leg.target_percent}% target by approx Rs. {excess:,.0f}; "
+                            "estimated gain clears transaction costs"
+                        ),
+                        estimated_cost=estimated_cost,
+                        estimated_benefit=estimated_benefit,
                     )
                 )
             elif current_value > 0:
@@ -367,6 +447,25 @@ class RecommendationService:
             symbol = self._normalize_symbol(holding.symbol)
             if symbol in target_symbols or holding.market_value <= 0:
                 continue
+            estimated_cost = self._estimated_transaction_cost(holding.market_value * 2, orders=2)
+            estimated_benefit = holding.gain_loss
+            if not self._clears_transaction_cost(estimated_benefit, estimated_cost):
+                actions.append(
+                    RebalanceAction(
+                        action="HOLD",
+                        symbol=holding.symbol,
+                        name=holding.symbol,
+                        quantity=None,
+                        amount=holding.market_value,
+                        reason=(
+                            "swap skipped: estimated gain does not clear sell+buy brokerage/"
+                            "transaction costs with buffer"
+                        ),
+                        estimated_cost=estimated_cost,
+                        estimated_benefit=estimated_benefit,
+                    )
+                )
+                continue
             actions.append(
                 RebalanceAction(
                     action="REVIEW SWAP",
@@ -374,19 +473,46 @@ class RecommendationService:
                     name=holding.symbol,
                     quantity=floor(holding.quantity) if holding.quantity > 0 else None,
                     amount=holding.market_value,
-                    reason="not part of this month's selected diversified model basket",
+                    reason=(
+                        "not part of this month's selected diversified model basket; "
+                        "estimated gain clears sell+buy transaction costs"
+                    ),
+                    estimated_cost=estimated_cost,
+                    estimated_benefit=estimated_benefit,
                 )
             )
 
         cash_used = float(budget_inr) - available_cash
         return actions, cash_used, max(available_cash, 0.0)
 
+    def _estimated_transaction_cost(self, turnover: float, orders: int) -> float:
+        if turnover <= 0 or orders <= 0:
+            return 0.0
+        return (
+            (float(orders) * self.settings.rebalance_flat_fee_per_order_inr)
+            + (turnover * self.settings.rebalance_variable_cost_rate)
+        )
+
+    def _proportional_gain(self, total_gain: float, holding_value: float, trade_value: float) -> float:
+        if holding_value <= 0 or trade_value <= 0:
+            return 0.0
+        return total_gain * min(trade_value / holding_value, 1.0)
+
+    def _clears_transaction_cost(self, estimated_benefit: float, estimated_cost: float) -> bool:
+        required = estimated_cost * self.settings.rebalance_min_benefit_cost_ratio
+        return estimated_benefit > required
+
     def _format_action(self, action: RebalanceAction) -> str:
         quantity = f" | Qty: {action.quantity}" if action.quantity else ""
+        cost_text = ""
+        if action.estimated_cost > 0:
+            benefit = action.estimated_benefit or 0.0
+            cost_text = f"\n  Est. benefit/cost: Rs. {benefit:,.0f} / Rs. {action.estimated_cost:,.0f}"
         return (
             f"• {action.action}: {action.name} ({action.symbol}){quantity}\n"
             f"  Approx: Rs. {action.amount:,.0f}\n"
             f"  Why: {action.reason}"
+            f"{cost_text}"
         )
 
     def _normalize_symbol(self, symbol: str) -> str:
@@ -404,15 +530,13 @@ class RecommendationService:
             return None
         try:
             return await self.ai.generate(
-                "Write only 2 short Telegram bullets. No markdown headings. "
-                "Use only the provided data. Do not add new instruments, prices, or quantities. "
-                "Mention one risk and one reason the monthly rebalance is sensible. "
-                "Do not describe this as intraday trading or a guaranteed recommendation.\n"
-                f"Risk profile: {risk_profile}\n"
-                f"Portfolio: {json.dumps(self._portfolio_context(portfolio), ensure_ascii=False)}\n"
-                f"Plan: {json.dumps(plan_context, ensure_ascii=False)}\n"
-                f"News status: {news_status}\n"
-                f"News: {json.dumps(news[:3], ensure_ascii=False)}"
+                recommendation_note_prompt(
+                    portfolio=self._portfolio_context(portfolio),
+                    risk_profile=risk_profile,
+                    plan_context=plan_context,
+                    news_status=news_status,
+                    news=news,
+                )
             )
         except Exception:
             return None

@@ -1,5 +1,7 @@
 # mypy: disable-error-code="union-attr,arg-type,index,assignment"
 
+from dataclasses import asdict
+
 import structlog
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
@@ -12,6 +14,11 @@ from app.repositories.portfolio import PortfolioRepository
 from app.repositories.users import UserRepository
 from app.services.ai import AIService
 from app.services.analytics import PortfolioAnalytics, percent_change
+from app.services.llm_prompts import (
+    portfolio_commentary_prompt,
+    portfolio_question_prompt,
+    why_recommendation_prompt,
+)
 from app.services.portfolio import PortfolioService
 from app.services.recommendations import RecommendationService
 from app.telegram.formatters import (
@@ -181,7 +188,13 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ai = AIService()
         if ai.available():
             try:
-                commentary = await ai.generate(f"Give concise portfolio commentary using only this data: {view}")
+                risk = users.latest_risk(user.id)
+                commentary = await ai.generate(
+                    portfolio_commentary_prompt(
+                        portfolio=asdict(view),
+                        risk_profile=risk.mode if risk else get_settings().default_risk_profile,
+                    )
+                )
             except Exception as exc:
                 view.statuses.append(type(view.statuses[0])("Gemini", False, str(exc)))
         await _reply(update, format_portfolio(view, commentary))
@@ -364,8 +377,11 @@ async def why_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     question = " ".join(context.args).strip() or "Explain the reasoning behind the latest recommendation."
     try:
         answer = await AIService().generate(
-            f"Use only this stored recommendation and context to answer.\nQuestion: {question}\n"
-            f"Recommendation: {recommendation.recommendation}\nContext: {recommendation.context}"
+            why_recommendation_prompt(
+                question=question,
+                recommendation=recommendation.recommendation,
+                context=recommendation.context,
+            )
         )
         await _reply(update, f"🧠 Why\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
     except Exception as exc:
@@ -388,8 +404,11 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     holdings = portfolio_repo.holdings_for_snapshot(latest.id)
     try:
         answer = await AIService().generate(
-            "Answer using only this portfolio data. If unavailable, say so.\n"
-            f"Question: {question}\nSnapshot: {latest.raw_payload}\nHoldings: {[h.raw_payload for h in holdings]}"
+            portfolio_question_prompt(
+                question=question,
+                snapshot=latest.raw_payload,
+                holdings=[h.raw_payload for h in holdings],
+            )
         )
         await _reply(update, f"💬 Answer\n━━━━━━━━━━━━━━━━━━━━\n{answer}")
     except Exception as exc:

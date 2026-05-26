@@ -23,34 +23,21 @@ class PortfolioService:
 
         holdings: list[HoldingView] = []
         for item in raw_holdings:
-            symbol = str(item.get("tradingSymbol") or item.get("symbol") or "").strip()
-            if not symbol:
-                statuses.append(ProviderStatus("Dhan", False, "A holding was skipped due to missing symbol."))
+            holding = await self._holding_from_record(item, statuses, source="holding")
+            if holding is not None:
+                holdings.append(holding)
+
+        holding_symbols = {holding.symbol.upper() for holding in holdings}
+        for item in raw_positions:
+            if not self._is_long_delivery_position(item):
                 continue
-            quantity = float(item.get("totalQty") or item.get("availableQty") or 0)
-            average_price = float(item.get("avgCostPrice") or 0)
-            market_price = None
-            sector = None
-            try:
-                quote = await self.market.quote(symbol)
-                market_price = float(quote["price"])
-                sector = await self.market.sector(symbol)
-            except Exception as exc:
-                statuses.append(ProviderStatus("yfinance", False, str(exc)))
-            market_value = quantity * (market_price if market_price is not None else average_price)
-            gain_loss = market_value - (quantity * average_price)
-            holdings.append(
-                HoldingView(
-                    symbol=symbol,
-                    quantity=quantity,
-                    average_price=average_price,
-                    market_price=market_price,
-                    market_value=market_value,
-                    gain_loss=gain_loss,
-                    sector=sector,
-                    raw=item,
-                )
-            )
+            symbol = self._symbol(item)
+            if not symbol or symbol.upper() in holding_symbols:
+                continue
+            holding = await self._holding_from_record(item, statuses, source="position")
+            if holding is not None:
+                holdings.append(holding)
+                holding_symbols.add(holding.symbol.upper())
 
         portfolio_value = sum(h.market_value for h in holdings)
         invested_amount = sum(h.quantity * h.average_price for h in holdings)
@@ -71,6 +58,70 @@ class PortfolioService:
         if persist:
             self._persist(user_id, view)
         return view
+
+    async def _holding_from_record(
+        self,
+        item: dict,
+        statuses: list[ProviderStatus],
+        source: str,
+    ) -> HoldingView | None:
+        symbol = self._symbol(item)
+        if not symbol:
+            statuses.append(ProviderStatus("Dhan", False, f"A {source} was skipped due to missing symbol."))
+            return None
+        quantity = self._quantity(item)
+        if quantity <= 0:
+            return None
+        average_price = self._average_price(item)
+        market_price = None
+        sector = None
+        try:
+            quote = await self.market.quote(symbol)
+            market_price = float(quote["price"])
+            sector = await self.market.sector(symbol)
+        except Exception as exc:
+            statuses.append(ProviderStatus("yfinance", False, str(exc)))
+        market_value = quantity * (market_price if market_price is not None else average_price)
+        gain_loss = market_value - (quantity * average_price)
+        return HoldingView(
+            symbol=symbol,
+            quantity=quantity,
+            average_price=average_price,
+            market_price=market_price,
+            market_value=market_value,
+            gain_loss=gain_loss,
+            sector=sector,
+            raw=item,
+        )
+
+    def _symbol(self, item: dict) -> str:
+        return str(item.get("tradingSymbol") or item.get("symbol") or "").strip()
+
+    def _quantity(self, item: dict) -> float:
+        for key in ("totalQty", "availableQty", "netQty", "quantity", "qty"):
+            value = item.get(key)
+            if value not in (None, ""):
+                return abs(float(value))
+        buy_qty = float(item.get("buyQty") or 0)
+        sell_qty = float(item.get("sellQty") or 0)
+        return max(buy_qty - sell_qty, 0.0)
+
+    def _average_price(self, item: dict) -> float:
+        for key in ("avgCostPrice", "buyAvg", "averagePrice", "avgPrice", "costPrice"):
+            value = item.get(key)
+            if value not in (None, ""):
+                return float(value)
+        return 0.0
+
+    def _is_long_delivery_position(self, item: dict) -> bool:
+        quantity = self._quantity(item)
+        if quantity <= 0:
+            return False
+        position_type = str(item.get("positionType") or item.get("position_type") or "").upper()
+        if position_type and position_type not in {"LONG", "OPEN"}:
+            return False
+        product = str(item.get("productType") or item.get("product") or "").upper()
+        return product in {"", "CNC", "DELIVERY", "LONGTERM", "MTF"}
 
     def _persist(self, user_id: str, view: PortfolioView) -> PortfolioSnapshot:
         snapshot = PortfolioSnapshot(

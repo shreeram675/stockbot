@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     default_risk_profile: str = "Balanced"
     monthly_investment_budget_inr: int = 5000
     monthly_investment_day: int = 12
+    rebalance_flat_fee_per_order_inr: float = 20
+    rebalance_variable_cost_rate: float = 0.0015
+    rebalance_min_benefit_cost_ratio: float = 1.2
 
     enable_daily_morning_report: bool = True
     enable_daily_close_report: bool = True

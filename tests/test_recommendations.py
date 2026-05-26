@@ -111,3 +111,67 @@ async def test_suggest_reviews_current_holdings_without_new_cash() -> None:
     assert "REVIEW TRIM: SBI Nifty 50 ETF (SETFNIF50)" in text
     assert "REVIEW SWAP: INFY (INFY)" in text
     assert "Sell/trim/swap rows are review actions" in text
+
+
+@pytest.mark.asyncio
+async def test_zero_value_holdings_review_does_not_show_target_mix() -> None:
+    service = RecommendationService(FakeRepository())
+    service.market = FakeMarket()
+    service.ai = SimpleNamespace(available=lambda: False)
+    portfolio = PortfolioView(
+        portfolio_value=0,
+        invested_amount=0,
+        pnl=0,
+        daily_pnl=None,
+        allocation={},
+        holdings=[],
+        statuses=[],
+    )
+
+    text = await service.suggest(
+        "user-1",
+        portfolio,
+        "Conservative",
+        0,
+        include_new_cash=False,
+        persist=False,
+    )
+
+    assert "Holdings Rebalance Review" in text
+    assert "Portfolio value: Rs. 0" in text
+    assert "No rebalance actions available because portfolio value is Rs. 0." in text
+    assert "Target Mix" not in text
+    assert "Universe scanned" not in text
+    assert "AI Note" not in text
+
+
+@pytest.mark.asyncio
+async def test_small_gain_swap_is_skipped_when_costs_are_higher() -> None:
+    service = RecommendationService(FakeRepository())
+    service.market = FakeMarket()
+    service.ai = SimpleNamespace(available=lambda: False)
+    portfolio = PortfolioView(
+        portfolio_value=1000,
+        invested_amount=995,
+        pnl=5,
+        daily_pnl=None,
+        allocation={"INFY": 100},
+        holdings=[
+            HoldingView("INFY", 1, 995, 1000, 1000, 5),
+        ],
+        statuses=[],
+    )
+
+    text = await service.suggest(
+        "user-1",
+        portfolio,
+        "Balanced",
+        0,
+        include_new_cash=False,
+        persist=False,
+    )
+
+    assert "REVIEW SWAP: INFY (INFY)" not in text
+    assert "HOLD: INFY (INFY)" in text
+    assert "swap skipped: estimated gain does not clear sell+buy brokerage/transaction costs" in text
+    assert "Est. benefit/cost: Rs. 5 / Rs. 43" in text

@@ -1,8 +1,11 @@
+from dataclasses import asdict
+
 from app.core.config import get_settings
 from app.repositories.portfolio import PortfolioRepository
 from app.repositories.users import UserRepository
 from app.services.ai import AIService
 from app.services.analytics import PortfolioAnalytics, percent_change
+from app.services.llm_prompts import close_report_prompt, morning_report_prompt
 from app.services.market import MarketDataService
 from app.services.portfolio import PortfolioService
 from app.services.recommendations import RecommendationService
@@ -34,10 +37,7 @@ class ReportService:
         insight = None
         if self.ai.available():
             try:
-                insight = await self.ai.generate(
-                    "Create a concise Indian investor morning note from this data only: "
-                    f"overview={overview}, news={news[:5]}, warnings={warnings}"
-                )
+                insight = await self.ai.generate(morning_report_prompt(overview, news, warnings))
             except Exception as exc:
                 warnings.append(f"AI unavailable: {exc}")
         return format_market_report("🌅 Daily Morning Report", overview, news, warnings, insight)
@@ -47,9 +47,12 @@ class ReportService:
         insight = None
         if self.ai.available():
             try:
+                risk = self.users.latest_risk(user_id)
                 insight = await self.ai.generate(
-                    "Create a concise market-close portfolio comment using only this data: "
-                    f"{portfolio}"
+                    close_report_prompt(
+                        portfolio=asdict(portfolio),
+                        risk_profile=risk.mode if risk else self.settings.default_risk_profile,
+                    )
                 )
             except Exception as exc:
                 portfolio.statuses.append(type(portfolio.statuses[0])("Gemini", False, str(exc)))
