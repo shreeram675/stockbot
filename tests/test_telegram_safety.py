@@ -7,11 +7,13 @@ from app.telegram.bot import (
     _parse_risk_mode,
     ask_command,
     build_application,
+    help_command,
     model_command,
     portfolio_command,
     risk_command,
     start,
     suggest_command,
+    telegram_bot_commands,
 )
 
 
@@ -64,6 +66,20 @@ async def test_authorized_start_works_without_providers(monkeypatch: pytest.Monk
     update = FakeUpdate(111)
     await start(update, SimpleNamespace(args=[]))
     assert "Stockbot is ready" in update.effective_message.replies[0]
+    assert "/model" not in update.effective_message.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_help_lists_primary_commands_without_duplicate_model_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram_only(monkeypatch)
+    update = FakeUpdate(111)
+    await help_command(update, SimpleNamespace(args=[]))
+    reply = update.effective_message.replies[0]
+    assert "/risk [Balanced|Conservative|Aggressive|Custom] - show or set risk profile" in reply
+    assert "/model" not in reply
+    assert reply.count("/risk") == 1
 
 
 @pytest.mark.asyncio
@@ -128,4 +144,22 @@ def test_command_registration(monkeypatch: pytest.MonkeyPatch) -> None:
         "ask_command",
         "simulate_command",
         "monthly_risk_callback",
+    ]
+
+
+def test_telegram_command_menu_excludes_legacy_model_alias() -> None:
+    commands = [command.command for command in telegram_bot_commands()]
+    assert "model" not in commands
+    assert commands == [
+        "start",
+        "help",
+        "portfolio",
+        "holdings",
+        "performance",
+        "risk",
+        "health",
+        "suggest",
+        "why",
+        "ask",
+        "simulate",
     ]

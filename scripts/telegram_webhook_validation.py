@@ -39,7 +39,6 @@ def main() -> None:
         "/holdings",
         "/performance",
         "/risk",
-        "/model balanced",
         "/health",
         "/ask Why did my portfolio fall?",
         "/suggest",

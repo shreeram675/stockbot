@@ -1,7 +1,7 @@
 # mypy: disable-error-code="union-attr,arg-type,index,assignment"
 
 import structlog
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
@@ -38,6 +38,38 @@ RISK_MODE_ALIASES = {
     "high risk": "Aggressive",
     "custom": "Custom",
 }
+BOT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "Start the assistant"),
+    ("help", "Show available commands"),
+    ("portfolio", "Portfolio value, P&L, allocation"),
+    ("holdings", "Current holdings"),
+    ("performance", "Daily, weekly, monthly trends"),
+    ("risk", "Show or set risk profile"),
+    ("health", "Portfolio health score"),
+    ("suggest", "Monthly investing allocation"),
+    ("why", "Explain latest recommendation"),
+    ("ask", "Ask a portfolio question"),
+    ("simulate", "Projection with assumptions"),
+)
+
+
+def telegram_bot_commands() -> list[BotCommand]:
+    return [BotCommand(command, description) for command, description in BOT_COMMANDS]
+
+
+def help_text() -> str:
+    special = {
+        "risk": "/risk [Balanced|Conservative|Aggressive|Custom] - show or set risk profile",
+        "ask": "/ask <question> - ask portfolio question",
+        "simulate": "/simulate 5000 10y - projection with assumptions",
+    }
+    lines = [
+        "🧭 Commands",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for command, description in BOT_COMMANDS[2:]:
+        lines.append(special.get(command, f"/{command} - {description[0].lower()}{description[1:]}"))
+    return "\n".join(lines)
 
 
 def _authorized(update: Update) -> bool:
@@ -127,7 +159,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(
         update,
         "👋 Stockbot is ready.\n\n"
-        "Use /portfolio, /holdings, /performance, /risk, /model, /health, /suggest, /why, /ask, or /simulate."
+        "Use /portfolio, /holdings, /performance, /risk, /health, /suggest, /why, /ask, or /simulate."
     )
 
 
@@ -135,23 +167,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _authorized(update):
         await _reject(update)
         return
-    await _reply(
-        update,
-        "🧭 Commands\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/portfolio - portfolio value, P&L, allocation\n"
-        "/holdings - holdings table\n"
-        "/performance - daily, weekly, monthly trends\n"
-        "/risk - show risk profile\n"
-        "/risk Balanced - set risk profile\n"
-        "/model aggressive - switch recommendation model\n"
-        "/model low risk - switch to conservative model\n"
-        "/health - health score and reasoning\n"
-        "/suggest - AI diversification recommendation\n"
-        "/why - explain latest recommendation\n"
-        "/ask <question> - ask portfolio question\n"
-        "/simulate 5000 10y - projection with assumptions"
-    )
+    await _reply(update, help_text())
 
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -325,7 +341,7 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             get_settings().monthly_investment_budget_inr,
             persist=True,
         )
-        await _reply(update, f"💡 Diversification Suggestion\n━━━━━━━━━━━━━━━━━━━━\n{text}")
+        await _reply(update, f"💡 Monthly Investing Allocation\n━━━━━━━━━━━━━━━━━━━━\n{text}")
     except MissingConfigurationError as exc:
         await _reply(
             update,

@@ -103,6 +103,12 @@ NewsAPI is intentionally unsupported.
 3. Deploy.
 4. Copy the deployment URL into `TELEGRAM_WEBHOOK_URL`.
 5. Register the Telegram webhook.
+6. Sync Telegram's command menu:
+
+```bash
+curl -X POST https://stockbot-rho.vercel.app/api/telegram/commands/sync \
+  -H "Authorization: Bearer <CRON_SECRET>"
+```
 
 ## 7. GitHub Secrets
 

@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import get_settings
 from app.telegram.bot import (
     ask_command,
-    model_command,
     portfolio_command,
     risk_command,
     start,
@@ -49,7 +48,6 @@ async def main() -> None:
         ("authorized /ask", ask_command, allowed, ["Why", "did", "it", "fall?"]),
         ("authorized /suggest", suggest_command, allowed, []),
         ("authorized /risk", risk_command, allowed, []),
-        ("authorized /model", model_command, allowed, []),
     ]
     for name, command, user_id, args in cases:
         update = FakeUpdate(user_id)

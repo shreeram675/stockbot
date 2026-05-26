@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import floor
 
 from app.core.errors import ExternalServiceError, MissingConfigurationError
@@ -127,18 +127,20 @@ class RecommendationService:
         if not legs:
             raise ExternalServiceError("Recommendation", "market prices unavailable for model basket")
 
+        legs = self._use_remaining_cash_for_zero_quantity_legs(legs, budget_inr)
         deployed = sum(leg.deployed_amount for leg in legs)
         cash_left = max(float(budget_inr) - deployed, 0.0)
         portfolio_state = "empty portfolio" if not portfolio.holdings else f"{len(portfolio.holdings)} current holding(s)"
         lines = [
-            "🎯 This Month's Plan",
+            "🎯 Monthly Investment Plan",
             "━━━━━━━━━━━━━━━━━━━━",
             f"Budget: Rs. {budget_inr:,.0f}",
             f"Risk: {risk_profile}",
+            "Style: long-term monthly investing, not trading",
             f"Portfolio: {portfolio_state}",
-            f"Universe scanned: {len(set(scanned_universe))} NSE ETF/equity/commodity symbols",
+            f"Universe scanned: {len(set(scanned_universe))} NSE ETF/equity/commodity candidates",
             "",
-            "🧺 Buy List",
+            "🧺 Long-Term Allocation",
         ]
         for leg in legs:
             lines.append(self._format_leg(leg))
@@ -150,6 +152,7 @@ class RecommendationService:
                 "",
                 "⚠️ Notes",
                 "• Quantities use latest Yahoo/yfinance prices and may differ at order time.",
+                "• This is a monthly buy-and-hold allocation, not an intraday/short-term trading signal.",
                 "• Diversification is spread across multiple equity sleeves plus gold/stability.",
                 "• This is an educational model allocation, not SEBI-registered advice.",
                 "• Review liquidity, taxes, brokerage, and suitability before placing orders.",
@@ -189,17 +192,31 @@ class RecommendationService:
         deployed = quantity * price
         return 1 - max(target_amount - deployed, 0) / max(target_amount, 1)
 
+    def _use_remaining_cash_for_zero_quantity_legs(
+        self,
+        legs: list[AllocationLeg],
+        budget_inr: int,
+    ) -> list[AllocationLeg]:
+        deployed = sum(leg.deployed_amount for leg in legs)
+        adjusted: list[AllocationLeg] = []
+        for leg in legs:
+            if leg.quantity == 0 and leg.price <= max(float(budget_inr) - deployed, 0):
+                leg = replace(leg, quantity=1)
+                deployed += leg.price
+            adjusted.append(leg)
+        return adjusted
+
     def _format_leg(self, leg: AllocationLeg) -> str:
         if leg.quantity <= 0:
             return (
                 f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
                 f"  Qty: 0 | Price: Rs. {leg.price:,.2f}\n"
-                "  Reason: target slice too small for 1 unit"
+                "  Reason: target allocation too small for 1 unit"
             )
         volume_text = f" | Vol: {leg.volume:,}" if leg.volume else ""
         return (
             f"• {leg.instrument.name} ({leg.instrument.symbol})\n"
-            f"  Qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
+            f"  Suggested monthly qty: {leg.quantity} | Approx: Rs. {leg.deployed_amount:,.0f}\n"
             f"  Price: Rs. {leg.price:,.2f} | Target: {leg.target_percent}%{volume_text}\n"
             f"  Why: {leg.instrument.reason}\n"
             f"  Picked from {leg.scanned_count} options"
@@ -219,7 +236,8 @@ class RecommendationService:
             return await self.ai.generate(
                 "Write only 2 short Telegram bullets. No markdown headings. "
                 "Use only the provided data. Do not add new instruments, prices, or quantities. "
-                "Mention one risk and one reason the allocation is sensible.\n"
+                "Mention one risk and one reason the long-term monthly allocation is sensible. "
+                "Do not describe this as trading.\n"
                 f"Risk profile: {risk_profile}\n"
                 f"Portfolio: {json.dumps(self._portfolio_context(portfolio), ensure_ascii=False)}\n"
                 f"Plan: {json.dumps(plan_context, ensure_ascii=False)}\n"

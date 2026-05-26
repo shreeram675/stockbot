@@ -19,7 +19,7 @@ from app.services.http import async_client
 from app.services.portfolio import PortfolioService
 from app.services.recommendations import RecommendationService
 from app.services.reports import ReportService
-from app.telegram.bot import build_application, monthly_risk_keyboard
+from app.telegram.bot import build_application, monthly_risk_keyboard, telegram_bot_commands
 from app.telegram.formatters import format_health, format_portfolio
 
 router = APIRouter()
@@ -139,7 +139,7 @@ async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
                 bot,
                 settings.telegram_allowed_user_id,
                 (
-                    "💡 Today's Suggestion\n"
+                    "💡 Today's Investing Allocation\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"{recommendation}"
                 ),
@@ -148,7 +148,7 @@ async def _send_authenticated_daily_activity(db, bot: Bot) -> None:
             await _send_telegram_text(
                 bot,
                 settings.telegram_allowed_user_id,
-                f"⚠️ Suggestion unavailable today.\n\n{exc}",
+                f"⚠️ Investing allocation unavailable today.\n\n{exc}",
             )
     except Exception as exc:
         await _send_telegram_text(
@@ -172,6 +172,21 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     finally:
         await app.shutdown()
     return {"ok": True}
+
+
+@router.post("/api/telegram/commands/sync")
+async def sync_telegram_commands(authorization: str | None = Header(None)):
+    _assert_cron_auth(authorization)
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise MissingConfigurationError("TELEGRAM_BOT_TOKEN")
+    commands = telegram_bot_commands()
+    async with Bot(settings.telegram_bot_token) as bot:
+        await bot.set_my_commands(commands)
+    return {
+        "ok": True,
+        "commands": [command.command for command in commands],
+    }
 
 
 @router.get("/api/dhan/auth/start")

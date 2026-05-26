@@ -57,7 +57,18 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-ve
 
 Do not paste real tokens into shared logs.
 
-## 5. Cron Jobs
+## 5. Sync Telegram Command Menu
+
+After deployment, sync Telegram's slash-command menu:
+
+```bash
+curl -X POST https://<your-vercel-domain>/api/telegram/commands/sync \
+  -H "Authorization: Bearer <CRON_SECRET>"
+```
+
+This removes stale command-menu entries such as old aliases while keeping the runtime handlers unchanged.
+
+## 6. Cron Jobs
 
 `vercel.json` defines:
 
@@ -68,7 +79,7 @@ Do not paste real tokens into shared logs.
 
 Cron endpoints require `Authorization: Bearer <CRON_SECRET>` when `CRON_SECRET` is configured.
 
-## 6. Dhan API-Key Auth
+## 7. Dhan API-Key Auth
 
 Set these URLs in Dhan:
 
@@ -84,4 +95,3 @@ https://stockbot-rho.vercel.app/api/dhan/auth/start
 ```
 
 This generates Dhan consent and redirects you to Dhan login. After approval, Dhan calls `/api/dhan/callback` with `tokenId`; the app consumes it and stores the resulting access token encrypted in Supabase.
-

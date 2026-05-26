@@ -23,6 +23,15 @@ Security:
 - Validates `X-Telegram-Bot-Api-Secret-Token` when `TELEGRAM_WEBHOOK_SECRET` is configured.
 - Telegram command handlers also enforce `TELEGRAM_ALLOWED_USER_ID`.
 
+## `POST /api/telegram/commands/sync`
+
+Syncs Telegram's slash-command menu from the app's primary command list.
+
+Security:
+
+- Requires `Authorization: Bearer <CRON_SECRET>` when `CRON_SECRET` is configured.
+- Does not expose secrets or portfolio data.
+
 ## `GET /api/cron/daily-morning`
 
 Sends daily morning market report to the authorized Telegram user.
@@ -46,4 +55,3 @@ When `CRON_SECRET` is set, cron routes require:
 ```text
 Authorization: Bearer <CRON_SECRET>
 ```
-
