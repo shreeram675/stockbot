@@ -35,6 +35,14 @@ def _assert_cron_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized cron request")
 
 
+def _assert_required_secret_auth(authorization: str | None) -> None:
+    settings = get_settings()
+    if not settings.cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET is required for this operation")
+    if authorization != f"Bearer {settings.cron_secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized request")
+
+
 def _fingerprint(value: str | None) -> str:
     if not value:
         return "missing"
@@ -176,7 +184,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
 
 @router.post("/api/telegram/commands/sync")
 async def sync_telegram_commands(authorization: str | None = Header(None)):
-    _assert_cron_auth(authorization)
+    _assert_required_secret_auth(authorization)
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise MissingConfigurationError("TELEGRAM_BOT_TOKEN")
